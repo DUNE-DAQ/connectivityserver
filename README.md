@@ -3,29 +3,6 @@
  This service provides a very simple flask based
 server to serve connection information to DAQ applications.
 
-## Installation
-
- Build the docker image
-```
-docker buildx build --tag connection-service:0.0.1 .
-```
-
- Apply the kubernetes manifest from connection-service.yaml. This
- should start a service called connection-flask in the namespace
- connections.
-
-```
-kubectl apply -f connection-service.yaml
-```
-
-To test the basic operation of the server, you can connect to  pod in the k8s cluster and try getting the root document.
-
-```
-> kubectl exec gordon-test -i -t -- bash
-[root@gordon-test /]# curl http://connection-flask.connections:5000
-<h1>Dump of configuration dictionary</h1>[root@gordon-test /]# 
-[root@gordon-test /]#
-```
 
 ## REST interface
 
@@ -81,21 +58,8 @@ This uri should be used to remove all published connections from the
 given partition. The request should be a urlencoded form with one field "partition" naming the partition to be retracted.
 
 ## Running the server locally from the command line
- To just run a local test, the server can be started from within the dbt-pyenv environment as shown below:
- ```
- > export FLASK_APP=microservices/connection-service/connection-flask.py
- > python -m flask run
- ```
-
- The server is intended to be run under the Gunicorn web server. This
- is set up in the docker container but is not available in the
- dunedaq release. To run interactivley without creating the container
- you can install the connection-service and its dependencies with
-
- ```
- 'pip install -U microservices/connection-service'
- ```
-
+ The server is intended to be run under the Gunicorn web server.
+ 
  ```
  gunicorn -b 0.0.0.0:5000 --workers=1 --worker-class=gthread --threads=2 \
         --timeout 5000000000 connection-service.connection-flask:app
