@@ -96,12 +96,12 @@ def dumpStats():
   dstream.seek(0)
   return dstream.read()
 
-@app.route("/reset")
-def reset():
+@app.route("/resetStats")
+def resetStats():
   stats = dumpStats()
 
-  global partitions, last_stats,npublishes,nlookups,lookup_time,publish_time,maxpartitions,maxentries
-  partitions={}
+  global last_stats,npublishes,nlookups,lookup_time,publish_time,maxpartitions,maxentries
+  
   last_stats=datetime.now()
   npublishes=0
   nlookups=0
@@ -109,8 +109,16 @@ def reset():
   publish_time=timedelta()
   maxpartitions=0
   maxentries={}
-
+  
   return stats
+
+@app.route("/resetService")
+def reset():
+
+  global partitions
+  partitions={}
+  return resetStats()
+  
 
 @app.route("/publish",methods=['POST'])
 def publish():
