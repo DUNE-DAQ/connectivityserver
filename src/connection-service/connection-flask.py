@@ -237,7 +237,7 @@ def get_connection(part):
       store=partitions[part]
       matched=[]
       for uid,con in store.items():
-        if regex.search(uid) and con.data_type==dt and now-con.time<entry_ttl:
+        if regex.fullmatch(uid) and con.data_type==dt and now-con.time<entry_ttl:
           #print (f"Found matching entry {uid} {con=}")
           #result.append('{'
           #              f'"uid":"{uid}",'
