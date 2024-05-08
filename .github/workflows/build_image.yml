@@ -40,7 +40,7 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: |
-            ghcr.io/DUNE-DAQ/microsocks
+            ghcr.io/DUNE-DAQ/connectivityserver
           tags: |
             type=raw,value=latest
             type=ref,event=branch
