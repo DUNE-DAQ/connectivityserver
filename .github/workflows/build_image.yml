@@ -1,6 +1,15 @@
-name: A dummy workflow to test PR 8
+name: Build connectivityserver docker image
 
 on:
+  schedule:
+    - cron: "0 5 * * 2"
+
+  push:
+    branches: [ develop ]
+    tags:
+      - 'v*'
+    paths:
+      - deploy/Dockerfile
 
   workflow_dispatch:
 
@@ -10,10 +19,37 @@ jobs:
     name: Build Docker image and push to github registries
     runs-on: ubuntu-latest
     permissions:
+      packages: write
       contents: read
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
         with:
-          repository: DUNE-DAQ/daq-docker
-          path: daq-docker 
+          repository: DUNE-DAQ/connectivityserver
+          path: connectivityserver 
+      
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: |
+            ghcr.io/DUNE-DAQ/connectivityserver
+          tags: |
+            type=raw,value=latest
+            type=ref,event=branch
+            type=ref,event=tag
+      
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v3
+        with:
+          context: ${{ github.workspace }}/connectivityserver/deploy
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
