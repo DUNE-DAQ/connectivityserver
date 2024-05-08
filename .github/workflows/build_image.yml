@@ -46,18 +46,18 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
 
-      - name: prepare build dir
-        run: |
-          build_dir="${{ github.workspace }}/docker-build"
-          mkdir -p $build_dir
-          cd $build_dir
-          ls -la ${{ github.workspace }}
-          cp ${{ github.workspace }}/connectivityserver/deploy/Dockerfile $build_dir/Dockerfile
+      # - name: prepare build dir
+      #   run: |
+      #     build_dir="${{ github.workspace }}/docker-build"
+      #     mkdir -p $build_dir
+      #     cd $build_dir
+      #     ls -la ${{ github.workspace }}
+      #     cp ${{ github.workspace }}/connectivityserver/deploy/Dockerfile $build_dir/Dockerfile
       
       - name: Build and push Docker images
         uses: docker/build-push-action@v3
         with:
-          context: ${{ github.workspace }}/docker-build
+          context: ${{ github.workspace }}/connectivityserver/deploy
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
