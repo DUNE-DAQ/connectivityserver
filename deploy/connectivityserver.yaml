@@ -39,7 +39,7 @@ spec:
               - key: node-role.kubernetes.io/worker
                 operator: Exists
       containers:
-      - image: docker.io/dunedaq/pocket-connectivityserver:1.0.0
+      - image: docker.io/dunedaq/pocket-connectivityserver:v1.1.1
         name: connectionservice
         imagePullPolicy: Always
         ports:
