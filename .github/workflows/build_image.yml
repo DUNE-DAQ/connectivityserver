@@ -1,0 +1,19 @@
+name: A dummy workflow to test PR 8
+
+on:
+
+  workflow_dispatch:
+
+jobs:
+
+  push_to_registries:
+    name: Build Docker image and push to github registries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          repository: DUNE-DAQ/daq-docker
+          path: daq-docker 
