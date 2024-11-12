@@ -15,8 +15,8 @@ from collections import namedtuple
 from flask import Flask, request, abort, make_response
 
 
-partitions={}
-partlock=Lock()
+sessions={}
+session_lock=Lock()
 
 if 'CONNECTION_FLASK_DEBUG' in os.environ:
   debug_level=int(os.environ['CONNECTION_FLASK_DEBUG'])
@@ -34,7 +34,7 @@ npublishes=0
 nlookups=0
 lookup_time=timedelta(0)
 publish_time=timedelta()
-maxpartitions=0
+maxsessions=0
 maxentries={}
 
 app=Flask(__name__)
@@ -44,19 +44,19 @@ def dump():
   now=datetime.now()
   dstream=StringIO()
   dstream.write(f'<h1>Dump of configuration dictionary</h1>')
-  dstream.write(f"<h2>Active partitions</h2><p>")
-  if len(partitions)>0:
+  dstream.write(f"<h2>Active sessions</h2><p>")
+  if len(sessions)>0:
     pad=' style="padding-left: 1em;padding-right: 1em"'
     dstream.write(f'<table style="border: 1px solid black">'
-                  f'<tr style="background: #e0e0e0"><th{pad}>Partition</th>'
+                  f'<tr style="background: #e0e0e0"><th{pad}>Session</th>'
                   f'<th{pad}>Entries</th></tr>')
-    for p in partitions:
+    for p in sessions:
       dstream.write(f'<tr><td{pad}>{p}'
-                    f'</td><td{pad}>{len(partitions[p])}</td></tr>')
+                    f'</td><td{pad}>{len(sessions[p])}</td></tr>')
     dstream.write(f"</table>")
-    for p in partitions:
-      store=partitions[p]
-      dstream.write(f'<h2>Partition {p}</h2><p>')
+    for p in sessions:
+      store=sessions[p]
+      dstream.write(f'<h2>Session {p}</h2><p>')
       for k,v in store.items():
         if now-v.time<entry_ttl:
           dstream.write(f'{k}: {v}</br>')
@@ -84,9 +84,9 @@ def stats_to_html(dstream):
     avg_lookup=timedelta()
   dstream.write(f"<p>{nlookups} calls to lookup in total time {lookup_time} "
                 f"(average {avg_lookup.microseconds} &micro;s per call)</p>")
-  dstream.write(f"<p>Maximum number of partitions active = {maxpartitions}</p>")
-  for part in maxentries:
-    dstream.write(f"<p>Maximum entries in partition {part} = {maxentries[part]}</p>")
+  dstream.write(f"<p>Maximum number of sessions active = {maxsessions}</p>")
+  for session in maxentries:
+    dstream.write(f"<p>Maximum entries in session {session} = {maxentries[session]}</p>")
 
 @app.route("/stats")
 def dumpStats():
@@ -100,54 +100,57 @@ def dumpStats():
 def resetStats():
   stats = dumpStats()
 
-  global last_stats,npublishes,nlookups,lookup_time,publish_time,maxpartitions,maxentries
-  
+  global last_stats,npublishes,nlookups,lookup_time,publish_time,maxsessions,maxentries
+
   last_stats=datetime.now()
   npublishes=0
   nlookups=0
   lookup_time=timedelta(0)
   publish_time=timedelta()
-  maxpartitions=0
+  maxsessions=0
   maxentries={}
-  
+
   return stats
 
 @app.route("/resetService")
 def reset():
 
-  global partitions
-  partitions={}
+  global sessions
+  sessions={}
   return resetStats()
-  
+
 
 @app.route("/publish",methods=['POST'])
 def publish():
   #  Store multiple connection ids and corresponding uris in a
-  #  dictionary associated with the appropriate partition.
+  #  dictionary associated with the appropriate session.
   timestamp=datetime.now()
   js=json.loads(request.data)
   if debug_level>2:
     print (f"[{timestamp}] Publish {js=}")
-  part=js['partition']
+  session = js.get('session')
+  if session is None:
+    session = js.get('partition')
 
   if debug_level>1:
-    print(f"[{timestamp}] Publish {len(js['connections'])} connections in partition {part}"
+    print(f"[{timestamp}] Publish {len(js['connections'])} connections in session {session}"
           f" from {request.remote_addr} uri={js['connections'][0]['uri']} ...")
-  partlock.acquire()
-  if part in partitions:
-    store=partitions[part]
+  session_lock.acquire()
+  if session in sessions:
+    store=sessions[session]
   else:
     store={}
-    partitions[part]=store
-    global maxpartitions
-    if len(partitions)>maxpartitions:
-      maxpartitions=len(partitions)
-    if not part in maxentries:
-      #print(f"Setting maxentries[{part}] to 0")
-      maxentries[part]=0
+    sessions[session]=store
+    global maxsessions
+    if len(sessions)>maxsessions:
+      maxsessions=len(sessions)
+    if not session in maxentries:
+      #print(f"Setting maxentries[{session}] to 0")
+      maxentries[session]=0
 
   Connection=namedtuple(
-    'Connection',['uri','data_type','connection_type','time'])
+    'Connection',['uri','data_type','connection_type','time']
+  )
 
   for connection in js['connections']:
     #print (f"{connection=}")
@@ -164,39 +167,48 @@ def publish():
   global npublishes, publish_time
   publish_time+=elapsed
   npublishes+=1
-  if len(store)>maxentries[part]:
-    maxentries[part]=len(store)
+  if len(store)>maxentries[session]:
+    maxentries[session]=len(store)
 
-  partlock.release()
+  session_lock.release()
   return 'OK'
 
+@app.route("/retract-session",methods=['POST'])
 @app.route("/retract-partition",methods=['POST'])
-def retract_partition():
+def retract_session():
   if debug_level>2:
-    print(f"[datetime.now()] retract_partition() request=[{request.form}]")
-  if 'partition' not in request.form:
+    print(f"[datetime.now()] retract_session() request=[{request.form}]")
+
+  session=request.form.get('session')
+  if session is None:
+    session=request.form.get('partition')
+  if session in None:
     abort(400)
-  part=request.form['partition']
-  partlock.acquire()
-  if part in partitions:
-    partitions.pop(part)
-    partlock.release()
+
+  session_lock.acquire()
+  if session in sessions:
+    sessions.pop(session)
+    session_lock.release()
     return 'OK'
   else:
-    partlock.release()
+    session_lock.release()
     abort(404)
 
 @app.route("/retract",methods=['POST'])
 def retract():
   js=json.loads(request.data)
   good=True
-  part=js['partition']
-  partlock.acquire()
-  if part not in partitions:
-    partlock.release()
-    return make_response(f"partition {part} not found", 404)
 
-  store=partitions[part]
+  session=js.get('session')
+  if session is None:
+    session=js.get('partition')
+
+  session_lock.acquire()
+  if session not in sessions:
+    session_lock.release()
+    return make_response(f"session {session} not found", 404)
+
+  store=sessions[session]
   for con in js['connections']:
     #print (f"{con=}")
     id=con['connection_id']
@@ -206,19 +218,25 @@ def retract():
       print(f"retract() could not find connection_id <{id}>")
       good=False
   if len(store)==0:
-    # We've deleted the last entry in this partition so delete the
-    # partition as well
-    partitions.pop(part)
-  partlock.release()
+    # We've deleted the last entry in this session so delete the
+    # session as well
+    sessions.pop(session)
+  session_lock.release()
   if good:
     return 'OK'
   else:
     abort(404)
 
-@app.route("/getconnection/<part>",methods=['POST','GET'])
-def get_connection(part):
+@app.route("/getconnection/<session>",methods=['POST','GET'])
+@app.route("/getconnection/<partition>",methods=['POST','GET'])
+def get_connection(session=None, partition=None):
   # Find connection uris that correspond to the connection id pattern
   # in the request. The pattern is treated as a regular expression.
+  if session is None:
+    session=partition
+  if session is None:
+    abort(400)
+
   now=datetime.now()
   js=json.loads(request.data)
   if debug_level>2:
@@ -232,9 +250,10 @@ def get_connection(part):
     result=[]
     regex=re.compile(js['uid_regex'])
     dt=js['data_type']
-    partlock.acquire()
-    if part in partitions:
-      store=partitions[part]
+    session_lock.acquire()
+
+    if session in sessions:
+      store=sessions[session]
       matched=[]
       for uid,con in store.items():
         if regex.fullmatch(uid) and con.data_type==dt and now-con.time<entry_ttl:
@@ -246,9 +265,9 @@ def get_connection(part):
           #              f'"data_type":"{con.data_type}"'
           #              '}')
           matched.append((uid,con))
-      partlock.release()
+      session_lock.release()
       # We should now be able to construct JSON string while other threads
-      # have access to the partition dict
+      # have access to the session dict
       for uid,con in matched:
         result.append('{'
                       f'"uid":"{uid}",'
@@ -267,8 +286,8 @@ def get_connection(part):
       lookup_time+=td
       return "["+",".join(result)+"]"
     else:
-      partlock.release()
-      print(f"[{now}] get_connection() Partition {part} not found")
+      session_lock.release()
+      print(f"[{now}] get_connection() Session {session} not found")
       abort(404)
   else:
     abort(400)
