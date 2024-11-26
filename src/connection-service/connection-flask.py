@@ -256,6 +256,10 @@ def get_connection(part):
                       f'"connection_type":{con.connection_type},'
                       f'"data_type":"{con.data_type}"'
                       '}')
+      # 26-Nov-2024, KAB: the following two lines are not intended to be included
+      # in production code. They are instead intended to be used in test situations
+      # in which we want to validate or debug the behavior of the full system when
+      # the ConnSvc is running slowly.
       import time
       time.sleep(0.05)
       td=datetime.now()-now
