@@ -256,6 +256,8 @@ def get_connection(part):
                       f'"connection_type":{con.connection_type},'
                       f'"data_type":"{con.data_type}"'
                       '}')
+      import time
+      time.sleep(0.05)
       td=datetime.now()-now
       if debug_level>0:
         print(f"[{now}] get_connection() "
