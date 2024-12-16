@@ -122,6 +122,14 @@ def reset():
 
 @app.route("/publish",methods=['POST'])
 def publish():
+  # 16-Dec-2024, KAB: the following several lines are not intended to be included
+  # in production code. They are instead intended to be used in test situations
+  # in which we want to validate or debug the behavior of the full system when
+  # the ConnSvc is running slowly.
+  import random
+  import time
+  time.sleep(0.6*random.random())
+
   #  Store multiple connection ids and corresponding uris in a
   #  dictionary associated with the appropriate partition.
   timestamp=datetime.now()
