@@ -38,6 +38,7 @@ spec:
             - matchExpressions:
               - key: node-role.kubernetes.io/worker
                 operator: Exists
+      automountServiceAccountToken: false
       containers:
       - image: ghcr.io/dune-daq/connectivityserver:v1.1.1
         name: connectionservice
