@@ -14,6 +14,10 @@ from datetime import datetime, timedelta
 from collections import namedtuple
 from flask import Flask, request, abort, make_response
 
+# 30-Jan-2025, KAB: tweak the print() statement default behavior so that it always flushes the output.
+# Without this, debug messages from this code appear in the ConnSvc log file at somewhat random times.
+import functools
+print = functools.partial(print, flush=True)
 
 partitions={}
 partlock=Lock()
@@ -153,6 +157,9 @@ def publish():
     #print (f"{connection=}")
     if 'uid' in  connection and 'uri' in connection:
       uid=connection['uid']
+      if debug_level>1:
+        now=datetime.now()
+        print(f"[{now}] Publish uid={uid}")
       store[uid]=Connection(uri=connection['uri'],
                             connection_type=connection['connection_type'],
                             data_type=connection['data_type'],
