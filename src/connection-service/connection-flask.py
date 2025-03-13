@@ -12,12 +12,8 @@ from threading import Lock
 from io import StringIO
 from datetime import datetime, timedelta
 from collections import namedtuple
+import logging
 from flask import Flask, request, abort, make_response
-
-# 30-Jan-2025, KAB: tweak the print() statement default behavior so that it always flushes the output.
-# Without this, debug messages from this code appear in the ConnSvc log file at somewhat random times.
-import functools
-print = functools.partial(print, flush=True)
 
 partitions={}
 partlock=Lock()
@@ -25,7 +21,21 @@ partlock=Lock()
 if 'CONNECTION_FLASK_DEBUG' in os.environ:
   debug_level=int(os.environ['CONNECTION_FLASK_DEBUG'])
 else:
-  debug_level=0
+  debug_level=1
+
+def convert_log_level(log_level):
+  match log_level:
+    case 0:
+      return logging.WARNING
+    case 1:
+      return logging.INFO
+    case 2:
+      return logging.DEBUG
+    case _:
+      return logging.INFO
+
+logging.basicConfig(level=convert_log_level(debug_level), format='%(asctime)s %(levelname)s %(filename)s:%(funcName)s:%(lineno)d  %(message)s')
+log = logging.getLogger(__name__)
 
 if 'ENTRY_TTL' in os.environ:
   ttl=int(os.environ['ENTRY_TTL'])
@@ -105,7 +115,7 @@ def resetStats():
   stats = dumpStats()
 
   global last_stats,npublishes,nlookups,lookup_time,publish_time,maxpartitions,maxentries
-  
+
   last_stats=datetime.now()
   npublishes=0
   nlookups=0
@@ -113,7 +123,7 @@ def resetStats():
   publish_time=timedelta()
   maxpartitions=0
   maxentries={}
-  
+
   return stats
 
 @app.route("/resetService")
@@ -122,7 +132,7 @@ def reset():
   global partitions
   partitions={}
   return resetStats()
-  
+
 
 @app.route("/publish",methods=['POST'])
 def publish():
@@ -130,13 +140,14 @@ def publish():
   #  dictionary associated with the appropriate partition.
   timestamp=datetime.now()
   js=json.loads(request.data)
-  if debug_level>2:
-    print (f"[{timestamp}] Publish {js=}")
+
+  log.debug(f"{js=}")
   part=js['partition']
 
-  if debug_level>1:
-    print(f"[{timestamp}] Publish {len(js['connections'])} connections in partition {part}"
-          f" from {request.remote_addr} uri={js['connections'][0]['uri']} ...")
+  log.info(
+    f"{len(js['connections'])} connections in partition {part} from {request.remote_addr} uri={js['connections'][0]['uri']}..."
+  )
+
   partlock.acquire()
   if part in partitions:
     store=partitions[part]
@@ -147,30 +158,34 @@ def publish():
     if len(partitions)>maxpartitions:
       maxpartitions=len(partitions)
     if not part in maxentries:
-      #print(f"Setting maxentries[{part}] to 0")
       maxentries[part]=0
 
   Connection=namedtuple(
     'Connection',['uri','data_type','connection_type','time'])
 
   for connection in js['connections']:
-    #print (f"{connection=}")
-    if 'uid' in  connection and 'uri' in connection:
+
+    if 'uid' in connection and 'uri' in connection:
       uid=connection['uid']
-      if debug_level>1:
-        now=datetime.now()
-        print(f"[{now}] Publish uid={uid}")
-      store[uid]=Connection(uri=connection['uri'],
-                            connection_type=connection['connection_type'],
-                            data_type=connection['data_type'],
-                            time=timestamp)
+      now=datetime.now()
+      log.info(f"uid={uid}")
+
+      store[uid]=Connection(
+        uri=connection['uri'],
+        connection_type=connection['connection_type'],
+        data_type=connection['data_type'],
+        time=timestamp
+      )
+
   now=datetime.now()
   elapsed=now-timestamp
-  if debug_level>0:
-    print(f"[{now}] Publish took {elapsed.microseconds} us to add {len(js['connections'])} connections")
+
+  log.debug(f"Took {elapsed.microseconds} us to add {len(js['connections'])} connections")
+
   global npublishes, publish_time
   publish_time+=elapsed
   npublishes+=1
+
   if len(store)>maxentries[part]:
     maxentries[part]=len(store)
 
@@ -179,12 +194,17 @@ def publish():
 
 @app.route("/retract-partition",methods=['POST'])
 def retract_partition():
-  if debug_level>2:
-    print(f"[datetime.now()] retract_partition() request=[{request.form}]")
-  if 'partition' not in request.form:
+
+
+  js=json.loads(request.data)
+  log.debug(f"request=[{js}]")
+
+  if 'partition' not in js:
     abort(400)
-  part=request.form['partition']
+
+  part=js['partition']
   partlock.acquire()
+
   if part in partitions:
     partitions.pop(part)
     partlock.release()
@@ -201,16 +221,15 @@ def retract():
   partlock.acquire()
   if part not in partitions:
     partlock.release()
-    return make_response(f"partition {part} not found", 404)
+    return make_response(f"Partition {part} not found", 404)
 
   store=partitions[part]
   for con in js['connections']:
-    #print (f"{con=}")
     id=con['connection_id']
     if id in store:
       store.pop(id)
     else:
-      print(f"retract() could not find connection_id <{id}>")
+      log.info(f"Could not find connection_id <{id}>")
       good=False
   if len(store)==0:
     # We've deleted the last entry in this partition so delete the
@@ -226,32 +245,26 @@ def retract():
 def get_connection(part):
   # Find connection uris that correspond to the connection id pattern
   # in the request. The pattern is treated as a regular expression.
+
   now=datetime.now()
   js=json.loads(request.data)
-  if debug_level>2:
-    print (f"[{now}] get_connection() {js=}")
+  log.debug(f"{js=}")
 
   if 'uid_regex' in js and 'data_type' in js:
-    if debug_level>1:
-      print(f"[{now}] get_connection()"
-            f" Searching for connections matching uid_regex<{js['uid_regex']}>"
-            f" and data_type {js['data_type']}")
+    log.info(
+      f"Searching for connections matching uid_regex<{js['uid_regex']}> and data_type {js['data_type']}"
+    )
+
     result=[]
     regex=re.compile(js['uid_regex'])
     dt=js['data_type']
     partlock.acquire()
+
     if part in partitions:
       store=partitions[part]
       matched=[]
       for uid,con in store.items():
         if regex.fullmatch(uid) and con.data_type==dt and now-con.time<entry_ttl:
-          #print (f"Found matching entry {uid} {con=}")
-          #result.append('{'
-          #              f'"uid":"{uid}",'
-          #              f'"uri":"{con.uri}",'
-          #              f'"connection_type":{con.connection_type},'
-          #              f'"data_type":"{con.data_type}"'
-          #              '}')
           matched.append((uid,con))
       partlock.release()
       # We should now be able to construct JSON string while other threads
@@ -263,19 +276,21 @@ def get_connection(part):
                       f'"connection_type":{con.connection_type},'
                       f'"data_type":"{con.data_type}"'
                       '}')
+
       td=datetime.now()-now
-      if debug_level>0:
-        print(f"[{now}] get_connection() "
-              f"Lookup took {td.microseconds} us to find {len(result)} connections")
+      log.debug(
+        f"Lookup took {td.microseconds} us to find {len(result)} connections"
+      )
       global nlookups, lookup_time
       # Should we have the lock while updating statistics? It doesn't
       # really matter if the stats aren't entirely accurate.
       nlookups+=1
       lookup_time+=td
+
       return "["+",".join(result)+"]"
     else:
       partlock.release()
-      print(f"[{now}] get_connection() Partition {part} not found")
+      log.info(f"Partition {part} not found")
       abort(404)
   else:
     abort(400)
