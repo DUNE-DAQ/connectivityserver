@@ -7,7 +7,7 @@ RUN yum clean all \
  && yum clean all
 
 RUN git clone --depth 1 -b v1.1.2 https://github.com/DUNE-DAQ/connectivityserver.git
-RUN pip3 install /connectivityserver
+RUN python3 -m pip install /connectivityserver
 
 COPY --chmod=755 entrypoint.sh /
 ENTRYPOINT ["/entrypoint.sh"]
