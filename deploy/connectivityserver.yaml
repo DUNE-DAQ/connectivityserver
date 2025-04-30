@@ -75,8 +75,15 @@ spec:
           capabilities:
             drop:
             - ALL
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
       securityContext:
         fsGroup: 10000
+      volumes:
+      - emptyDir:
+          sizeLimit: 500Mi
+        name: tmp
 ---
 apiVersion: v1
 kind: Service
