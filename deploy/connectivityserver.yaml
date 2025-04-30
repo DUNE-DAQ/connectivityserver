@@ -52,6 +52,16 @@ spec:
             memory: 512Mi
           requests:
             memory: 8Mi
+        livenessProbe:
+          tcpSocket:
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          tcpSocket:
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 20
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
         securityContext:
@@ -81,7 +91,7 @@ spec:
   - name: http
     protocol: TCP
     port: 5000
-    targetPort: 5000
+    targetPort: http
   selector:
     app.kubernetes.io/app: connectionservice
     app.kubernetes.io/component: connectionservice
