@@ -161,7 +161,7 @@ def publish():
       maxentries[part]=0
 
   Connection=namedtuple(
-    'Connection',['uri','data_type','connection_type','time'])
+    'Connection',['uri','data_type','capacity','connection_type','time'])
 
   for connection in js['connections']:
 
@@ -174,6 +174,7 @@ def publish():
         uri=connection['uri'],
         connection_type=connection['connection_type'],
         data_type=connection['data_type'],
+        capacity=connection['capacity'],
         time=timestamp
       )
 
@@ -274,7 +275,8 @@ def get_connection(part):
                       f'"uid":"{uid}",'
                       f'"uri":"{con.uri}",'
                       f'"connection_type":{con.connection_type},'
-                      f'"data_type":"{con.data_type}"'
+                      f'"data_type":"{con.data_type}",'
+                      f'"capacity":{con.capacity}'
                       '}')
 
       td=datetime.now()-now
