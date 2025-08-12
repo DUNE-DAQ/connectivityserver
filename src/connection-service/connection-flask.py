@@ -174,7 +174,7 @@ def publish():
         uri=connection['uri'],
         connection_type=connection['connection_type'],
         data_type=connection['data_type'],
-        capacity=connection['capacity'],
+        capacity=connection['capacity'] if 'capacity' in connection else 0, # Backwards compatibility
         time=timestamp
       )
 
