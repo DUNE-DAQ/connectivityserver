@@ -24,15 +24,23 @@ else:
   debug_level=1
 
 def convert_log_level(log_level):
-  match log_level:
-    case 0:
-      return logging.WARNING
-    case 1:
-      return logging.INFO
-    case 2:
-      return logging.DEBUG
-    case _:
-      return logging.INFO
+  if log_level == 0:
+    return logging.WARNING
+  elif log_level == 1:
+    return logging.INFO
+  elif log_level == 2:
+    return logging.DEBUG
+  return logging.INFO
+  # Match added in Python 3.11, our containers run 3.9
+  # match log_level:
+  #   case 0:
+  #     return logging.WARNING
+  #   case 1:
+  #     return logging.INFO
+  #   case 2:
+  #     return logging.DEBUG
+  #   case _:
+  #     return logging.INFO
 
 logging.basicConfig(level=convert_log_level(debug_level), format='%(asctime)s %(levelname)s %(filename)s:%(funcName)s:%(lineno)d  %(message)s')
 log = logging.getLogger(__name__)
@@ -161,7 +169,7 @@ def publish():
       maxentries[part]=0
 
   Connection=namedtuple(
-    'Connection',['uri','data_type','connection_type','time'])
+    'Connection',['uri','data_type','capacity','connection_type','time'])
 
   for connection in js['connections']:
 
@@ -174,6 +182,7 @@ def publish():
         uri=connection['uri'],
         connection_type=connection['connection_type'],
         data_type=connection['data_type'],
+        capacity=connection['capacity'] if 'capacity' in connection else 0, # Backwards compatibility
         time=timestamp
       )
 
@@ -274,7 +283,8 @@ def get_connection(part):
                       f'"uid":"{uid}",'
                       f'"uri":"{con.uri}",'
                       f'"connection_type":{con.connection_type},'
-                      f'"data_type":"{con.data_type}"'
+                      f'"data_type":"{con.data_type}",'
+                      f'"capacity":{con.capacity}'
                       '}')
 
       td=datetime.now()-now
