@@ -7,7 +7,7 @@ server to serve connection information to DAQ applications.
 
  Build the docker image
 ```
-docker buildx build --tag connectivityserver:1.0.0 .
+docker buildx build --tag connectivityserver:latest .
 ```
 
  Apply the kubernetes manifest from connectivityserver.yaml. This
