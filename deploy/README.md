@@ -6,8 +6,12 @@ server to serve connection information to DAQ applications.
 ## Installation
 
  Build the docker image
+```bash
+docker buildx build --tag ghcr.io/dune-daq/connectivityserver:latest .
 ```
-docker buildx build --tag connectivityserver:latest .
+Or, if you want to specify a tag
+```bash
+docker buildx build --tag ghcr.io/dune-daq/connectivityserver:v1.2.0 --build-arg VERSION=v1.2.0 .
 ```
 
  Apply the kubernetes manifest from connectivityserver.yaml. This
