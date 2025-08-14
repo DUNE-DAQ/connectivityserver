@@ -5,7 +5,7 @@ server to serve connection information to DAQ applications.
 
 ## Installation
 
- Build the docker image
+To build the docker image of develop just do
 ```bash
 docker buildx build --tag ghcr.io/dune-daq/connectivityserver:latest .
 ```
