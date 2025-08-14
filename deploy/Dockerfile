@@ -1,7 +1,7 @@
 FROM docker.io/almalinux:9
 
 EXPOSE 5000
-ARG VERSION=v1.1.2
+ARG VERSION=develop
 
 RUN yum clean all \
  && yum -y install python3-pip python3-pip-wheel python3-devel git \
