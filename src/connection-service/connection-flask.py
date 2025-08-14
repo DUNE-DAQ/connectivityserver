@@ -31,16 +31,6 @@ def convert_log_level(log_level):
   elif log_level == 2:
     return logging.DEBUG
   return logging.INFO
-  # Match added in Python 3.11, our containers run 3.9
-  # match log_level:
-  #   case 0:
-  #     return logging.WARNING
-  #   case 1:
-  #     return logging.INFO
-  #   case 2:
-  #     return logging.DEBUG
-  #   case _:
-  #     return logging.INFO
 
 logging.basicConfig(level=convert_log_level(debug_level), format='%(asctime)s %(levelname)s %(filename)s:%(funcName)s:%(lineno)d  %(message)s')
 log = logging.getLogger(__name__)
