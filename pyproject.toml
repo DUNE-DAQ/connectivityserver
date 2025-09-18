@@ -1,0 +1,26 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=61.0"]
+
+[project]
+name = "connection-service"
+description = "A very simple Flask based server to serve connection information to DAQ applications"
+version = "1.1.2"
+readme = "docs/README.md"
+requires-python = ">=3.6"
+urls = { "homepage" = "https://github.com/DUNE-DAQ/connectivityserver" }
+dependencies = [
+       "Flask",
+       "gevent",
+       "gunicorn",
+       "Werkzeug"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+integrationtest = ["*"]
