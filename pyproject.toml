@@ -24,3 +24,32 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
+
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.pytest.ini_options]
+addopts = "-v --tb=short --cov=connectivityserver --cov=src/connectivityserver tests/"  # omitted --cov-report=html to avoid suppressing table to stdout
+
+[tool.coverage.run]
+source = ["connectivityserver"]
+omit = ["tests/*", "scripts/*"]
+
+# * See https://docs.astral.sh/ruff/rules/ for details on Ruff's linting options
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # check for errors using PyFlakes
+    "I",    # best practices for import calls
+    "UP",   # suggestions for code modernization
+    "RUF",  # build in Ruff warnings
+    "R",    # refactoring suggestions
+]
+ignore = [
+    "E501", # Don't enforce line lengths within a linting context
+]
