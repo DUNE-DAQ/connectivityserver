@@ -197,6 +197,8 @@ def publish():
 
 @app.route("/retract-partition",methods=['POST'])
 def retract_partition():
+  if len(request.data) == 0:
+    abort(400)
 
   js=json.loads(request.data)
   log.debug(f"request=[{js}]")
@@ -216,6 +218,9 @@ def retract_partition():
 
 @app.route("/retract",methods=['POST'])
 def retract():
+  if len(request.data) == 0:
+    abort(400)
+
   js=json.loads(request.data)
   good=True
   part=js['partition']
@@ -225,6 +230,8 @@ def retract():
     return make_response(f"Partition {part} not found", 404)
 
   store=partitions[part]
+  if 'connections' not in js:
+    abort(400)
   for con in js['connections']:
     id=con['connection_id']
     if id in store:
@@ -243,6 +250,9 @@ def retract():
 
 @app.route("/getconnection/<part>",methods=['POST','GET'])
 def get_connection(part):
+  if len(request.data) == 0:
+    abort(400)
+
   # Find connection uris that correspond to the connection id pattern
   # in the request. The pattern is treated as a regular expression.
 
