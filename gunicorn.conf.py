@@ -3,4 +3,4 @@ workers=1
 worker_class="gthread"
 threads=2
 timeout=5000000000
-wsgi_app="connection-service.connection-flask:app"
+wsgi_app="connectivityserver.connectionflask:app"
