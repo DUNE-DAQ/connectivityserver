@@ -1,4 +1,4 @@
-# Connection-service
+# connectivityserver
 
  This service provides a very simple flask based
 server to serve connection information to DAQ applications.
@@ -11,7 +11,7 @@ docker buildx build --tag ghcr.io/dune-daq/connectivityserver:latest .
 ```
 Or, if you want to specify a tag
 ```bash
-docker buildx build --tag ghcr.io/dune-daq/connectivityserver:v1.2.0 --build-arg VERSION=v1.2.0 .
+docker buildx build --tag ghcr.io/dune-daq/connectivityserver:v1.3.0 --build-arg VERSION=v1.3.0 .
 ```
 
  Apply the kubernetes manifest from connectivityserver.yaml. This
