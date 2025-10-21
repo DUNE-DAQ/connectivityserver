@@ -5,15 +5,19 @@
 #  received with this code.
 #
 
-import os
 import json
-import re
-from threading import Lock
-from io import StringIO
-from datetime import datetime, timedelta
-from collections import namedtuple
 import logging
-from flask import Flask, request, abort, make_response
+import os
+import re
+from collections import namedtuple
+from datetime import datetime, timedelta
+from io import StringIO
+from threading import Lock
+
+from flask import Flask, abort, make_response, request
+
+# Some functions exit with an abort(NNN) instead of return so don't complain!
+#ruff: noqa RET503
 
 partitions={}
 partlock=Lock()
@@ -26,9 +30,9 @@ else:
 def convert_log_level(log_level):
   if log_level == 0:
     return logging.WARNING
-  elif log_level == 1:
+  if log_level == 1:
     return logging.INFO
-  elif log_level == 2:
+  if log_level == 2:
     return logging.DEBUG
   return logging.INFO
 
@@ -55,8 +59,8 @@ app=Flask(__name__)
 def dump():
   now=datetime.now()
   dstream=StringIO()
-  dstream.write(f'<h1>Dump of configuration dictionary</h1>')
-  dstream.write(f"<h2>Active partitions</h2><p>")
+  dstream.write('<h1>Dump of configuration dictionary</h1>')
+  dstream.write("<h2>Active partitions</h2><p>")
   if len(partitions)>0:
     pad=' style="padding-left: 1em;padding-right: 1em"'
     dstream.write(f'<table style="border: 1px solid black">'
@@ -65,7 +69,7 @@ def dump():
     for p in partitions:
       dstream.write(f'<tr><td{pad}>{p}'
                     f'</td><td{pad}>{len(partitions[p])}</td></tr>')
-    dstream.write(f"</table>")
+    dstream.write("</table>")
     for p in partitions:
       store=partitions[p]
       dstream.write(f'<h2>Partition {p}</h2><p>')
@@ -76,8 +80,8 @@ def dump():
           dstream.write(f'<strike>{k}: {v}</strike></br>')
       dstream.write("</p>")
   else:
-    dstream.write(f"None</p>")
-  dstream.write(f"<hr><h2>Server statistics</h2>")
+    dstream.write("None</p>")
+  dstream.write("<hr><h2>Server statistics</h2>")
   stats_to_html(dstream)
   dstream.seek(0)
   return dstream.read()
@@ -103,7 +107,7 @@ def stats_to_html(dstream):
 @app.route("/stats")
 def dumpStats():
   dstream=StringIO()
-  dstream.write(f'<h1>Connection server statistics</h1>')
+  dstream.write('<h1>Connection server statistics</h1>')
   stats_to_html(dstream)
   dstream.seek(0)
   return dstream.read()
@@ -155,7 +159,7 @@ def publish():
     global maxpartitions
     if len(partitions)>maxpartitions:
       maxpartitions=len(partitions)
-    if not part in maxentries:
+    if part not in maxentries:
       maxentries[part]=0
 
   Connection=namedtuple(
@@ -193,7 +197,8 @@ def publish():
 
 @app.route("/retract-partition",methods=['POST'])
 def retract_partition():
-
+  if len(request.data) == 0:
+    abort(400)
 
   js=json.loads(request.data)
   log.debug(f"request=[{js}]")
@@ -208,12 +213,14 @@ def retract_partition():
     partitions.pop(part)
     partlock.release()
     return 'OK'
-  else:
-    partlock.release()
-    abort(404)
+  partlock.release()
+  abort(404)
 
 @app.route("/retract",methods=['POST'])
 def retract():
+  if len(request.data) == 0:
+    abort(400)
+
   js=json.loads(request.data)
   good=True
   part=js['partition']
@@ -223,6 +230,8 @@ def retract():
     return make_response(f"Partition {part} not found", 404)
 
   store=partitions[part]
+  if 'connections' not in js:
+    abort(400)
   for con in js['connections']:
     id=con['connection_id']
     if id in store:
@@ -237,11 +246,13 @@ def retract():
   partlock.release()
   if good:
     return 'OK'
-  else:
-    abort(404)
+  abort(404)
 
 @app.route("/getconnection/<part>",methods=['POST','GET'])
 def get_connection(part):
+  if len(request.data) == 0:
+    abort(400)
+
   # Find connection uris that correspond to the connection id pattern
   # in the request. The pattern is treated as a regular expression.
 
@@ -288,10 +299,10 @@ def get_connection(part):
       lookup_time+=td
 
       return "["+",".join(result)+"]"
-    else:
-      partlock.release()
-      log.info(f"Partition {part} not found")
-      abort(404)
+
+    partlock.release()
+    log.info(f"Partition {part} not found")
+    abort(404)
   else:
     abort(400)
 

@@ -1,4 +1,4 @@
-# Connection-service
+# connectivityserver
 
  This service provides a very simple flask based
 server to serve connection information to DAQ applications.
@@ -55,14 +55,14 @@ This uri should be used to remove published connections. The request should be J
 
 ### /retract-partition
 This uri should be used to remove all published connections from the
-given partition. The request should be a urlencoded form with one field "partition" naming the partition to be retracted.
+given partition. The request should be JSON encoded with one field "partition" naming the partition to be retracted.
 
 ## Running the server locally from the command line
  The server is intended to be run under the Gunicorn web server.
  
  ```
  gunicorn -b 0.0.0.0:5000 --workers=1 --worker-class=gthread --threads=2 \
-        --timeout 5000000000 connection-service.connection-flask:app
+        --timeout 5000000000 connectivityserver.connectionflask:app
  ```
 
 Some debug information will be printed by the connection-flask if the
