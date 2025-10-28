@@ -1,10 +1,14 @@
 import json
+import os
 import pytest
+from datetime import timedelta
+from time import sleep
 
 import connectivityserver.connectionflask as cf
 
 @pytest.fixture()
 def app():
+  cf.entry_ttl = timedelta(seconds=1)
   yield cf.app
 
 
@@ -99,12 +103,30 @@ def test_retract_partition(client):
   resp = client.post("/retract-partition", json=retraction)
   assert resp.status_code == 404
 
+def test_purge(client):
+  resp = client.post("/publish", json=con)
+  assert resp.status_code == 200
+
+  resp = client.get("/")
+  assert b"strike" not in resp.data
+
+  sleep(1.1)
+  resp = client.get("/")
+  assert b"strike" in resp.data
+
+  resp = client.get("/purge")
+  resp = client.get("/")
+  assert b"strike" not in resp.data
+
+
 
 def test_dump(client):
   resp = client.get("/")
   assert b"Dump" in resp.data
 
 def test_stats(client):
+  resp = client.post("/publish", json=con)
+  assert resp.status_code == 200
   resp = client.get("/stats")
   assert resp.status_code == 200
   assert b"<h1>Connection server statistics" in resp.data

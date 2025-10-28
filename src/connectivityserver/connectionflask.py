@@ -57,22 +57,24 @@ app=Flask(__name__)
 
 @app.route("/")
 def dump():
+  """ Generate HTML page showing all current connections for all partitions """
   now=datetime.now()
   dstream=StringIO()
   dstream.write('<h1>Dump of configuration dictionary</h1>')
-  dstream.write("<h2>Active partitions</h2><p>")
+  dstream.write("<h2>Active sessions</h2><p>")
   if len(partitions)>0:
     pad=' style="padding-left: 1em;padding-right: 1em"'
     dstream.write(f'<table style="border: 1px solid black">'
-                  f'<tr style="background: #e0e0e0"><th{pad}>Partition</th>'
+                  f'<tr style="background: #e0e0e0"><th{pad}>Session</th>'
                   f'<th{pad}>Entries</th></tr>')
     for p in partitions:
       dstream.write(f'<tr><td{pad}>{p}'
                     f'</td><td{pad}>{len(partitions[p])}</td></tr>')
     dstream.write("</table>")
+
     for p in partitions:
       store=partitions[p]
-      dstream.write(f'<h2>Partition {p}</h2><p>')
+      dstream.write(f'<h2>Session {p}</h2><p>')
       for k,v in store.items():
         if now-v.time<entry_ttl:
           dstream.write(f'{k}: {v}</br>')
@@ -100,9 +102,29 @@ def stats_to_html(dstream):
     avg_lookup=timedelta()
   dstream.write(f"<p>{nlookups} calls to lookup in total time {lookup_time} "
                 f"(average {avg_lookup.microseconds} &micro;s per call)</p>")
-  dstream.write(f"<p>Maximum number of partitions active = {maxpartitions}</p>")
+  dstream.write(f"<p>Maximum number of sessions active = {maxpartitions}</p>")
   for part in maxentries:
-    dstream.write(f"<p>Maximum entries in partition {part} = {maxentries[part]}</p>")
+    dstream.write(f"<p>Maximum entries in session {part} = {maxentries[part]}</p>")
+
+@app.route("/purge")
+def purge():
+  """ Remove all partitions that have no items within the TTL """
+  now = datetime.now()
+  remove = []
+  partlock.acquire()
+  for part in partitions:
+    stale = True
+    for key, val in partitions[part].items():
+      if now-val.time<entry_ttl:
+        stale = False
+        break
+    if stale:
+      remove.append(part)
+  for part in remove:
+    partitions.pop(part)
+  partlock.release()
+  return 'OK'
+
 
 @app.route("/stats")
 def dumpStats():
@@ -144,10 +166,15 @@ def publish():
   js=json.loads(request.data)
 
   log.debug(f"{js=}")
-  part=js['partition']
+  if 'partition' in js:
+    part=js['partition']
+  elif 'session' in js:
+    part=js['session']
+  else:
+    abort(400)
 
   log.info(
-    f"{len(js['connections'])} connections in partition {part} from {request.remote_addr} uri={js['connections'][0]['uri']}..."
+    f"{len(js['connections'])} connections in session {part} from {request.remote_addr} uri={js['connections'][0]['uri']}..."
   )
 
   partlock.acquire()
@@ -159,8 +186,8 @@ def publish():
     global maxpartitions
     if len(partitions)>maxpartitions:
       maxpartitions=len(partitions)
-    if part not in maxentries:
-      maxentries[part]=0
+  if part not in maxentries:
+    maxentries[part]=0
 
   Connection=namedtuple(
     'Connection',['uri','data_type','capacity','connection_type','time'])
@@ -196,6 +223,7 @@ def publish():
   return 'OK'
 
 @app.route("/retract-partition",methods=['POST'])
+@app.route("/retract-session",methods=['POST'])
 def retract_partition():
   if len(request.data) == 0:
     abort(400)
@@ -203,10 +231,13 @@ def retract_partition():
   js=json.loads(request.data)
   log.debug(f"request=[{js}]")
 
-  if 'partition' not in js:
+  if 'partition' in js:
+    part=js['partition']
+  elif 'session' in js:
+    part=js['session']
+  else:
     abort(400)
 
-  part=js['partition']
   partlock.acquire()
 
   if part in partitions:
@@ -223,7 +254,13 @@ def retract():
 
   js=json.loads(request.data)
   good=True
-  part=js['partition']
+  if 'partition' in js:
+    part=js['partition']
+  elif 'session' in js:
+    part=js['session']
+  else:
+    abort(400)
+
   partlock.acquire()
   if part not in partitions:
     partlock.release()
