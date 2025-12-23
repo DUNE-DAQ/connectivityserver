@@ -51,7 +51,8 @@ spec:
           limits:
             memory: 512Mi
           requests:
-            memory: 8Mi
+            memory: 32Mi
+            cpu: 100m
         livenessProbe:
           tcpSocket:
             port: http
