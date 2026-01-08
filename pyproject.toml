@@ -11,9 +11,7 @@ requires-python = ">=3.6"
 urls = { "homepage" = "https://github.com/DUNE-DAQ/connectivityserver" }
 dependencies = [
        "Flask",
-       "gevent",
-       "gunicorn",
-       "Werkzeug"
+       "gunicorn[gevent]",
 ]
 
 [tool.setuptools]
@@ -24,7 +22,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
-
 
 [project.optional-dependencies]
 dev = [

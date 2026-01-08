@@ -1,4 +1,4 @@
-FROM docker.io/almalinux:9
+FROM docker.io/almalinux:10
 
 EXPOSE 5000
 ARG VERSION=develop
