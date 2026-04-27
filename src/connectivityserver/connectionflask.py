@@ -72,13 +72,35 @@ def dump():
     dstream.write("</table>")
     for p in partitions:
       store=partitions[p]
-      dstream.write(f'<h2>Partition {p}</h2><p>')
+      dstream.write(f'<h2>Partition {p}</h2>')
+      dstream.write(f'<table style="border: 1px solid black">'
+                    f'<tr style="background: #e0e0e0">'
+                    f'<th{pad} rowspan="2">Title</th>'
+                    f'<th{pad} colspan="5">Connection</th>'
+                    f'</tr>'
+                    f'<tr style="background: #e0e0e0">'
+                    f'<th{pad}>uri</th>'
+                    f'<th{pad}>data_type</th>'
+                    f'<th{pad}>capacity</th>'
+                    f'<th{pad}>connection_type</th>'
+                    f'<th{pad}>time</th>'
+                    f'</tr>')
       for k,v in store.items():
         if now-v.time<entry_ttl:
-          dstream.write(f'{k}: {v}</br>')
+          dstream.write(f'<tr><td{pad}>{k}</td>'
+                        f'<td{pad}>{v.uri}</td>'
+                        f'<td{pad}>{v.data_type}</td>'
+                        f'<td{pad}>{v.capacity}</td>'
+                        f'<td{pad}>{v.connection_type}</td>'
+                        f'<td{pad}>{v.time}</td></tr>')
         else:
-          dstream.write(f'<strike>{k}: {v}</strike></br>')
-      dstream.write("</p>")
+          dstream.write(f'<tr><td{pad}><strike>{k}</strike></td>'
+                        f'<td{pad}><strike>{v.uri}</strike></td>'
+                        f'<td{pad}><strike>{v.data_type}</strike></td>'
+                        f'<td{pad}><strike>{v.capacity}</strike></td>'
+                        f'<td{pad}><strike>{v.connection_type}</strike></td>'
+                        f'<td{pad}><strike>{v.time}</strike></td></tr>')
+      dstream.write("</table>")
   else:
     dstream.write("None</p>")
   dstream.write("<hr><h2>Server statistics</h2>")
