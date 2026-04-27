@@ -85,21 +85,15 @@ def dump():
                     f'<th{pad}>connection_type</th>'
                     f'<th{pad}>time</th>'
                     f'</tr>')
+      format_cell=lambda value,strike: f'<strike>{value}</strike>' if strike else f'{value}'
       for k,v in store.items():
-        if now-v.time<entry_ttl:
-          dstream.write(f'<tr><td{pad}>{k}</td>'
-                        f'<td{pad}>{v.uri}</td>'
-                        f'<td{pad}>{v.data_type}</td>'
-                        f'<td{pad}>{v.capacity}</td>'
-                        f'<td{pad}>{v.connection_type}</td>'
-                        f'<td{pad}>{v.time}</td></tr>')
-        else:
-          dstream.write(f'<tr><td{pad}><strike>{k}</strike></td>'
-                        f'<td{pad}><strike>{v.uri}</strike></td>'
-                        f'<td{pad}><strike>{v.data_type}</strike></td>'
-                        f'<td{pad}><strike>{v.capacity}</strike></td>'
-                        f'<td{pad}><strike>{v.connection_type}</strike></td>'
-                        f'<td{pad}><strike>{v.time}</strike></td></tr>')
+        expired = now-v.time >= entry_ttl
+        dstream.write(f'<tr><td{pad}>{format_cell(k,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.uri,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.data_type,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.capacity,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.connection_type,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.time,expired)}</td></tr>')
       dstream.write("</table>")
   else:
     dstream.write("None</p>")
