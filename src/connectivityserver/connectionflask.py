@@ -85,7 +85,7 @@ def dump():
                     f'<th{pad}>connection_type</th>'
                     f'<th{pad}>time</th>'
                     f'</tr>')
-      format_cell=lambda value,strike: f'<strike>{value}</strike>' if strike else f'{value}'
+      format_cell=lambda value,strike: f'<span style="color: red;">{value}</span>' if strike else f'{value}'
       for k,v in store.items():
         expired = now-v.time >= entry_ttl
         dstream.write(f'<tr><td{pad}>{format_cell(k,expired)}</td>'
