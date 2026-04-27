@@ -76,7 +76,7 @@ def dump():
       dstream.write(f'<h3>{p}</h3>')
       dstream.write(f'<table style="border: 1px solid black">'
                     f'<tr style="background: #e0e0e0">'
-                    f'<th{pad} rowspan="2">Title</th>'
+                    f'<th{pad} rowspan="2">Name</th>'
                     f'<th{pad} colspan="5">Connection</th>'
                     f'</tr>'
                     f'<tr style="background: #e0e0e0">'
