@@ -212,8 +212,8 @@ def publish():
   partlock.release()
   return 'OK'
 
-@app.route("/retract-partition",methods=['POST'])
-def retract_partition():
+@app.route("/retract-session",methods=['POST'])
+def retract_session():
   if len(request.data) == 0:
     abort(400)
 
@@ -232,6 +232,16 @@ def retract_partition():
     return 'OK'
   partlock.release()
   abort(404)
+
+
+@app.route("/retract-partition",methods=['POST'])
+def retract_partition():
+  """
+  For backwards compatibility.
+  Delete this when the partition word is completely retired
+  """
+  log.warning("retract-partition depreciated. Please use retract-session.")
+  retract_session()
 
 @app.route("/retract",methods=['POST'])
 def retract():
