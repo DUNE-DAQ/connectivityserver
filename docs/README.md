@@ -37,7 +37,7 @@ server to serve connection information to DAQ applications.
     http://connection-flask.connections:5000/publish
 ```
 
-### /getconnection/<partition> 
+### /getconnection/<session> 
 This uri returns a list of connections matching the 'uid_regex' and
 'data_type' specified in the JSON encoded request.
 
@@ -53,9 +53,9 @@ curl -d '{"uid_regex":"DRO.*","data_type":"TPSet"}' \
 This uri should be used to remove published connections. The request should be JSON encoded with the keys "partition" and "connections" with the latter being an array of "connection_id" and "data_type" values.
 
 
-### /retract-partition
+### /retract-session
 This uri should be used to remove all published connections from the
-given partition. The request should be JSON encoded with one field "partition" naming the partition to be retracted.
+given session. The request should be JSON encoded with one field "session" naming the session to be retracted.
 
 ## Running the server locally from the command line
  The server is intended to be run under the Gunicorn web server.

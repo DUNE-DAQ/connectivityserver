@@ -88,15 +88,15 @@ def test_retract_partition(client):
   resp = client.post("/publish", json=con)
   assert resp.status_code == 200
 
-  resp = client.post("/retract-partition")
+  resp = client.post("/retract-session")
   assert resp.status_code == 400
 
   retraction = json.loads("""{"partition":"ccTest"}""")
-  resp = client.post("/retract-partition", json=retraction)
+  resp = client.post("/retract-session", json=retraction)
   assert resp.status_code == 200
 
   # Second time should fail
-  resp = client.post("/retract-partition", json=retraction)
+  resp = client.post("/retract-session", json=retraction)
   assert resp.status_code == 404
 
 
