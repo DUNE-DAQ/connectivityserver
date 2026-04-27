@@ -70,9 +70,10 @@ def dump():
       dstream.write(f'<tr><td{pad}>{p}'
                     f'</td><td{pad}>{len(partitions[p])}</td></tr>')
     dstream.write("</table>")
+    dstream.write(f'<h2>Partitions</h2>')
     for p in partitions:
       store=partitions[p]
-      dstream.write(f'<h2>Partition {p}</h2>')
+      dstream.write(f'<h3>{p}</h3>')
       dstream.write(f'<table style="border: 1px solid black">'
                     f'<tr style="background: #e0e0e0">'
                     f'<th{pad} rowspan="2">Title</th>'
