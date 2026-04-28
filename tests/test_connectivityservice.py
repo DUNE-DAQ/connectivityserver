@@ -34,7 +34,7 @@ con = json.loads("""{
      "uri":"tcp://192.168.1.100:1235"
     }
    ],
-   "partition":"ccTest"
+   "session":"ccTest"
   }""")
 
 
@@ -46,6 +46,23 @@ def test_noconnection(client):
 def test_publish(client):
   resp = client.post("/publish", json=con)
   assert resp.status_code == 200
+
+
+def test_publish_with_partition_still_works(client):
+  partition_con = {
+    "connections": con["connections"],
+    "partition": "ccPartitionCompat",
+  }
+
+  resp = client.post("/publish", json=partition_con)
+  assert resp.status_code == 200
+
+  query = {"uid_regex": "DRO.*", "data_type": "TPSet"}
+  resp = client.post("/getconnection/ccPartitionCompat", json=query)
+  assert resp.status_code == 200
+
+  rjson = json.loads(resp.data)
+  assert len(rjson) == 2
 
 def test_lookup(client):
   query = json.loads("""{"uid_regex":"DRO.*", "data_type":"TPSet"}""")
@@ -68,7 +85,7 @@ def test_retract(client):
   resp = client.post("/retract")
   assert resp.status_code == 400
 
-  retraction = json.loads("""{"partition":"ccTest",
+  retraction = json.loads("""{"session":"ccTest",
     "connections":[{"connection_id":"DRO-000-tp_to_trigger"},
                    {"connection_id":"DRO-001-tp_to_trigger"}]
   }""")
@@ -84,14 +101,14 @@ def test_retract(client):
   assert resp.status_code == 404
 
 
-def test_retract_partition(client):
+def test_retract_session(client):
   resp = client.post("/publish", json=con)
   assert resp.status_code == 200
 
   resp = client.post("/retract-session")
   assert resp.status_code == 400
 
-  retraction = json.loads("""{"partition":"ccTest"}""")
+  retraction = json.loads("""{"session":"ccTest"}""")
   resp = client.post("/retract-session", json=retraction)
   assert resp.status_code == 200
 

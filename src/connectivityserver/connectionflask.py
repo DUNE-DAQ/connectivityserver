@@ -27,6 +27,22 @@ if 'CONNECTION_FLASK_DEBUG' in os.environ:
 else:
   debug_level=1
 
+
+def get_sesh(js):
+  has_session = 'session' in js
+  has_partition = 'partition' in js
+
+  if has_session and has_partition:
+    raise ValueError("Both 'session' and 'partition' were provided")
+
+  if has_session:
+    return js['session']
+
+  if has_partition:
+    return js['partition']
+
+  raise ValueError("No session (partition) provided")
+
 def convert_log_level(log_level):
   if log_level == 0:
     return logging.WARNING
@@ -161,7 +177,10 @@ def publish():
   js=json.loads(request.data)
 
   log.debug(f"{js=}")
-  sesh=js['partition']
+  try:
+    sesh = get_sesh(js)
+  except ValueError:
+    abort(400)
 
   log.info(
     f"{len(js['connections'])} connections in session {sesh} from {request.remote_addr} uri={js['connections'][0]['uri']}..."
@@ -220,10 +239,11 @@ def retract_session():
   js=json.loads(request.data)
   log.debug(f"request=[{js}]")
 
-  if 'partition' not in js:
+  try:
+    sesh = get_sesh(js)
+  except ValueError:
     abort(400)
 
-  sesh=js['partition']
   seshlock.acquire()
 
   if sesh in sessions:
@@ -250,7 +270,11 @@ def retract():
 
   js=json.loads(request.data)
   good=True
-  sesh=js['partition']
+  try:
+    sesh = get_sesh(js)
+  except ValueError:
+    abort(400)
+
   seshlock.acquire()
   if sesh not in sessions:
     seshlock.release()
