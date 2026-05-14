@@ -70,15 +70,32 @@ def dump():
       dstream.write(f'<tr><td{pad}>{p}'
                     f'</td><td{pad}>{len(partitions[p])}</td></tr>')
     dstream.write("</table>")
+    dstream.write(f'<h2>Partitions</h2>')
     for p in partitions:
       store=partitions[p]
-      dstream.write(f'<h2>Partition {p}</h2><p>')
+      dstream.write(f'<h3>{p}</h3>')
+      dstream.write(f'<table style="border: 1px solid black">'
+                    f'<tr style="background: #e0e0e0">'
+                    f'<th{pad} rowspan="2">Name</th>'
+                    f'<th{pad} colspan="5">Connection</th>'
+                    f'</tr>'
+                    f'<tr style="background: #e0e0e0">'
+                    f'<th{pad}>uri</th>'
+                    f'<th{pad}>data_type</th>'
+                    f'<th{pad}>capacity</th>'
+                    f'<th{pad}>connection_type</th>'
+                    f'<th{pad}>time</th>'
+                    f'</tr>')
+      format_cell=lambda value,strike: f'<span style="color: red;">{value}</span>' if strike else f'{value}'
       for k,v in store.items():
-        if now-v.time<entry_ttl:
-          dstream.write(f'{k}: {v}</br>')
-        else:
-          dstream.write(f'<strike>{k}: {v}</strike></br>')
-      dstream.write("</p>")
+        expired = now-v.time >= entry_ttl
+        dstream.write(f'<tr><td{pad}>{format_cell(k,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.uri,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.data_type,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.capacity,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.connection_type,expired)}</td>'
+                      f'<td{pad}>{format_cell(v.time,expired)}</td></tr>')
+      dstream.write("</table>")
   else:
     dstream.write("None</p>")
   dstream.write("<hr><h2>Server statistics</h2>")
