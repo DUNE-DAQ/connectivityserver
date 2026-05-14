@@ -19,13 +19,29 @@ from flask import Flask, abort, make_response, request
 # Some functions exit with an abort(NNN) instead of return so don't complain!
 #ruff: noqa RET503
 
-partitions={}
-partlock=Lock()
+sessions={}
+seshlock=Lock()
 
 if 'CONNECTION_FLASK_DEBUG' in os.environ:
   debug_level=int(os.environ['CONNECTION_FLASK_DEBUG'])
 else:
   debug_level=1
+
+
+def get_sesh(js):
+  has_session = 'session' in js
+  has_partition = 'partition' in js
+
+  if has_session and has_partition:
+    raise ValueError("Both 'session' and 'partition' were provided")
+
+  if has_session:
+    return js['session']
+
+  if has_partition:
+    return js['partition']
+
+  raise ValueError("No session (partition) provided")
 
 def convert_log_level(log_level):
   if log_level == 0:
@@ -50,7 +66,7 @@ npublishes=0
 nlookups=0
 lookup_time=timedelta(0)
 publish_time=timedelta()
-maxpartitions=0
+maxsessions=0
 maxentries={}
 
 app=Flask(__name__)
@@ -60,19 +76,19 @@ def dump():
   now=datetime.now()
   dstream=StringIO()
   dstream.write('<h1>Dump of configuration dictionary</h1>')
-  dstream.write("<h2>Active partitions</h2><p>")
-  if len(partitions)>0:
+  dstream.write("<h2>Active sessions</h2><p>")
+  if len(sessions)>0:
     pad=' style="padding-left: 1em;padding-right: 1em"'
     dstream.write(f'<table style="border: 1px solid black">'
-                  f'<tr style="background: #e0e0e0"><th{pad}>Partition</th>'
+                  f'<tr style="background: #e0e0e0"><th{pad}>Session</th>'
                   f'<th{pad}>Entries</th></tr>')
-    for p in partitions:
+    for p in sessions:
       dstream.write(f'<tr><td{pad}>{p}'
-                    f'</td><td{pad}>{len(partitions[p])}</td></tr>')
+                    f'</td><td{pad}>{len(sessions[p])}</td></tr>')
     dstream.write("</table>")
-    dstream.write(f'<h2>Partitions</h2>')
-    for p in partitions:
-      store=partitions[p]
+    dstream.write(f'<h2>Sessions</h2>')
+    for p in sessions:
+      store=sessions[p]
       dstream.write(f'<h3>{p}</h3>')
       dstream.write(f'<table style="border: 1px solid black">'
                     f'<tr style="background: #e0e0e0">'
@@ -117,9 +133,9 @@ def stats_to_html(dstream):
     avg_lookup=timedelta()
   dstream.write(f"<p>{nlookups} calls to lookup in total time {lookup_time} "
                 f"(average {avg_lookup.microseconds} &micro;s per call)</p>")
-  dstream.write(f"<p>Maximum number of partitions active = {maxpartitions}</p>")
-  for part in maxentries:
-    dstream.write(f"<p>Maximum entries in partition {part} = {maxentries[part]}</p>")
+  dstream.write(f"<p>Maximum number of sessions active = {maxsessions}</p>")
+  for sesh in maxentries:
+    dstream.write(f"<p>Maximum entries in session {sesh} = {maxentries[sesh]}</p>")
 
 @app.route("/stats")
 def dumpStats():
@@ -133,14 +149,14 @@ def dumpStats():
 def resetStats():
   stats = dumpStats()
 
-  global last_stats,npublishes,nlookups,lookup_time,publish_time,maxpartitions,maxentries
+  global last_stats,npublishes,nlookups,lookup_time,publish_time,maxsessions,maxentries
 
   last_stats=datetime.now()
   npublishes=0
   nlookups=0
   lookup_time=timedelta(0)
   publish_time=timedelta()
-  maxpartitions=0
+  maxsessions=0
   maxentries={}
 
   return stats
@@ -148,36 +164,39 @@ def resetStats():
 @app.route("/resetService")
 def reset():
 
-  global partitions
-  partitions={}
+  global sessions
+  sessions={}
   return resetStats()
 
 
 @app.route("/publish",methods=['POST'])
 def publish():
   #  Store multiple connection ids and corresponding uris in a
-  #  dictionary associated with the appropriate partition.
+  #  dictionary associated with the appropriate session.
   timestamp=datetime.now()
   js=json.loads(request.data)
 
   log.debug(f"{js=}")
-  part=js['partition']
+  try:
+    sesh = get_sesh(js)
+  except ValueError:
+    abort(400)
 
   log.info(
-    f"{len(js['connections'])} connections in partition {part} from {request.remote_addr} uri={js['connections'][0]['uri']}..."
+    f"{len(js['connections'])} connections in session {sesh} from {request.remote_addr} uri={js['connections'][0]['uri']}..."
   )
 
-  partlock.acquire()
-  if part in partitions:
-    store=partitions[part]
+  seshlock.acquire()
+  if sesh in sessions:
+    store=sessions[sesh]
   else:
     store={}
-    partitions[part]=store
-    global maxpartitions
-    if len(partitions)>maxpartitions:
-      maxpartitions=len(partitions)
-    if part not in maxentries:
-      maxentries[part]=0
+    sessions[sesh]=store
+    global maxsessions
+    if len(sessions)>maxsessions:
+      maxsessions=len(sessions)
+    if sesh not in maxentries:
+      maxentries[sesh]=0
 
   Connection=namedtuple(
     'Connection',['uri','data_type','capacity','connection_type','time'])
@@ -206,32 +225,43 @@ def publish():
   publish_time+=elapsed
   npublishes+=1
 
-  if len(store)>maxentries[part]:
-    maxentries[part]=len(store)
+  if len(store)>maxentries[sesh]:
+    maxentries[sesh]=len(store)
 
-  partlock.release()
+  seshlock.release()
   return 'OK'
 
-@app.route("/retract-partition",methods=['POST'])
-def retract_partition():
+@app.route("/retract-session",methods=['POST'])
+def retract_session():
   if len(request.data) == 0:
     abort(400)
 
   js=json.loads(request.data)
   log.debug(f"request=[{js}]")
 
-  if 'partition' not in js:
+  try:
+    sesh = get_sesh(js)
+  except ValueError:
     abort(400)
 
-  part=js['partition']
-  partlock.acquire()
+  seshlock.acquire()
 
-  if part in partitions:
-    partitions.pop(part)
-    partlock.release()
+  if sesh in sessions:
+    sessions.pop(sesh)
+    seshlock.release()
     return 'OK'
-  partlock.release()
+  seshlock.release()
   abort(404)
+
+
+@app.route("/retract-partition",methods=['POST'])
+def retract_partition():
+  """
+  For backwards compatibility.
+  Delete this when the partition word is completely retired
+  """
+  log.warning("retract-partition depreciated. Please use retract-session.")
+  retract_session()
 
 @app.route("/retract",methods=['POST'])
 def retract():
@@ -240,13 +270,17 @@ def retract():
 
   js=json.loads(request.data)
   good=True
-  part=js['partition']
-  partlock.acquire()
-  if part not in partitions:
-    partlock.release()
-    return make_response(f"Partition {part} not found", 404)
+  try:
+    sesh = get_sesh(js)
+  except ValueError:
+    abort(400)
 
-  store=partitions[part]
+  seshlock.acquire()
+  if sesh not in sessions:
+    seshlock.release()
+    return make_response(f"Session {sesh} not found", 404)
+
+  store=sessions[sesh]
   if 'connections' not in js:
     abort(400)
   for con in js['connections']:
@@ -257,16 +291,16 @@ def retract():
       log.info(f"Could not find connection_id <{id}>")
       good=False
   if len(store)==0:
-    # We've deleted the last entry in this partition so delete the
-    # partition as well
-    partitions.pop(part)
-  partlock.release()
+    # We've deleted the last entry in this session so delete the
+    # session as well
+    sessions.pop(sesh)
+  seshlock.release()
   if good:
     return 'OK'
   abort(404)
 
-@app.route("/getconnection/<part>",methods=['POST','GET'])
-def get_connection(part):
+@app.route("/getconnection/<sesh>",methods=['POST','GET'])
+def get_connection(sesh):
   if len(request.data) == 0:
     abort(400)
 
@@ -285,17 +319,17 @@ def get_connection(part):
     result=[]
     regex=re.compile(js['uid_regex'])
     dt=js['data_type']
-    partlock.acquire()
+    seshlock.acquire()
 
-    if part in partitions:
-      store=partitions[part]
+    if sesh in sessions:
+      store=sessions[sesh]
       matched=[]
       for uid,con in store.items():
         if regex.fullmatch(uid) and con.data_type==dt and now-con.time<entry_ttl:
           matched.append((uid,con))
-      partlock.release()
+      seshlock.release()
       # We should now be able to construct JSON string while other threads
-      # have access to the partition dict
+      # have access to the session dict
       for uid,con in matched:
         result.append('{'
                       f'"uid":"{uid}",'
@@ -317,8 +351,8 @@ def get_connection(part):
 
       return "["+",".join(result)+"]"
 
-    partlock.release()
-    log.info(f"Partition {part} not found")
+    seshlock.release()
+    log.info(f"Session {sesh} not found")
     abort(404)
   else:
     abort(400)
