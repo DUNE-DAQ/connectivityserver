@@ -137,3 +137,17 @@ def test_reset(client):
     resp = client.get("/stats")
     assert resp.status_code == 200
     assert b"<p>0 calls to publish" in resp.data
+
+
+def test_live(client):
+    resp = client.get("/live")
+    assert resp.status_code == 200
+    assert b"OK" in resp.data
+
+
+def test_ready(client):
+    resp = client.post("/publish", json=con)
+    assert resp.status_code == 200
+    resp = client.get("/ready")
+    assert resp.status_code == 200
+    assert b"OK" in resp.data

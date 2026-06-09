@@ -59,6 +59,25 @@ maxpartitions = 0
 maxentries = {}
 
 app = Flask(__name__)
+appstarted = False
+
+
+@app.before_first_request
+def mark_started():
+    global appstarted
+    appstarted = True
+
+
+@app.route("/live", methods=["GET"])
+def live():
+    return "OK", 200
+
+
+@app.route("/ready", methods=["GET"])
+def ready():
+    if appstarted:
+        return "OK", 200
+    return "Not Ready", 503
 
 
 @app.route("/")
