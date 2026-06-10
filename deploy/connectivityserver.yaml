@@ -54,16 +54,25 @@ spec:
           requests:
             memory: 32Mi
             cpu: 100m
+        startupProbe:
+          httpGet:
+            path: /ready
+            port: http
+          failureThreshold: 30
+          periodSeconds: 10
         livenessProbe:
-          tcpSocket:
+          httpGet:
+            path: /live
             port: http
           initialDelaySeconds: 15
           periodSeconds: 20
         readinessProbe:
-          tcpSocket:
+          httpGet:
+            path: /ready
             port: http
-          initialDelaySeconds: 15
-          periodSeconds: 20
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
         securityContext:
