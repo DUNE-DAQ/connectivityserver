@@ -59,12 +59,11 @@ maxpartitions = 0
 maxentries = {}
 
 app = Flask(__name__)
+global appstarted
 appstarted = False
 
 
-@app.before_first_request
-def mark_started():
-    global appstarted
+with app.app_context():
     appstarted = True
 
 
