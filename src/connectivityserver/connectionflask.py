@@ -69,11 +69,6 @@ def map_uri_to_hostname(uri: str) -> str:
         return f"Error parsing URI or resolving host: {e}"
 
 
-# logging.basicConfig(
-#     level=convert_log_level(debug_level),
-#     format="%(asctime)s %(levelname)s %(filename)s:%(funcName)s:%(lineno)d  %(message)s",
-# )
-# log = logging.getLogger(__name__)
 
 
 
