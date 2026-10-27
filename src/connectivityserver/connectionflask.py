@@ -6,43 +6,61 @@
 #
 
 import json
-import logging
 import os
 import re
 from collections import namedtuple
 from datetime import datetime, timedelta
 from io import StringIO
+import socket
 from threading import Lock
+from urllib.parse import urlparse
 
 from flask import Flask, abort, make_response, request
-
+from daqpytools.logging import get_daq_logger
+import logging 
 # Some functions exit with an abort(NNN) instead of return so don't complain!
 # ruff: noqa RET503
 
 partitions = {}
 partlock = Lock()
 
-if "CONNECTION_FLASK_DEBUG" in os.environ:
-    debug_level = int(os.environ["CONNECTION_FLASK_DEBUG"])
-else:
-    debug_level = 1
+# See README for logging explanations and use of CONNECTION_FLASK_DEBUG
+debug_level = int(os.environ["CONNECTION_FLASK_DEBUG"]) if "CONNECTION_FLASK_DEBUG" in os.environ else 1
+log_level_mapping = {
+    0 : logging.WARNING,
+    1 : logging.INFO,
+    2 : logging.DEBUG,
+}
+log = get_daq_logger(__name__, log_level=log_level_mapping.get(debug_level, logging.INFO), stream_handlers=True)
+
+def map_uri_to_hostname(uri: str) -> str:
+    """
+    Map a URI to a hostname. This function is used to extract the hostname from a URI string.
+
+    Args:
+        uri (str): The URI string to be mapped.
+
+    Returns:
+        str: The extracted hostname from the URI.
+
+    Raises:
+        ValueError: If the URI is not in a valid format or does not contain a hostname.
+    """
+
+    try:
+        ip_address = urlparse(uri).hostname
+        if not ip_address:
+            raise ValueError(f"Invalid URI format: {uri}. No hostname found.")
+
+        hostname, aliases, ip_list = socket.gethostbyaddr(ip_address)
+        return hostname
+
+    except socket.herror:
+        return f"No reverse DNS record found for IP: {ip_address}"
+    except Exception as e:
+        return f"Error parsing URI or resolving host: {e}"
 
 
-def convert_log_level(log_level):
-    if log_level == 0:
-        return logging.WARNING
-    if log_level == 1:
-        return logging.INFO
-    if log_level == 2:
-        return logging.DEBUG
-    return logging.INFO
-
-
-logging.basicConfig(
-    level=convert_log_level(debug_level),
-    format="%(asctime)s %(levelname)s %(filename)s:%(funcName)s:%(lineno)d  %(message)s",
-)
-log = logging.getLogger(__name__)
 
 if "ENTRY_TTL" in os.environ:
     ttl = int(os.environ["ENTRY_TTL"])
@@ -105,10 +123,11 @@ def dump():
                 f'<table style="border: 1px solid black">'
                 f'<tr style="background: #e0e0e0">'
                 f'<th{pad} rowspan="2">Name</th>'
-                f'<th{pad} colspan="5">Connection</th>'
+                f'<th{pad} colspan="6">Connection</th>'  # Increased colspan from 5 to 6
                 f"</tr>"
                 f'<tr style="background: #e0e0e0">'
                 f"<th{pad}>uri</th>"
+                f"<th{pad}>uri (resolved)</th>"         # Added the new header entry
                 f"<th{pad}>data_type</th>"
                 f"<th{pad}>capacity</th>"
                 f"<th{pad}>connection_type</th>"
@@ -120,9 +139,12 @@ def dump():
             )
             for k, v in store.items():
                 expired = now - v.time >= entry_ttl
+                resolved_hostname = urlparse(v.uri).scheme + "://" + map_uri_to_hostname(v.uri) # Call resolution function
+                
                 dstream.write(
                     f"<tr><td{pad}>{format_cell(k, expired)}</td>"
                     f"<td{pad}>{format_cell(v.uri, expired)}</td>"
+                    f"<td{pad}>{format_cell(resolved_hostname, expired)}</td>" # Render resolved uri row
                     f"<td{pad}>{format_cell(v.data_type, expired)}</td>"
                     f"<td{pad}>{format_cell(v.capacity, expired)}</td>"
                     f"<td{pad}>{format_cell(v.connection_type, expired)}</td>"
@@ -213,57 +235,65 @@ def publish():
     log.debug(f"{js=}")
     part = js["partition"]
 
-    log.info(
+    log.debug(
         f"{len(js['connections'])} connections in partition {part} from {request.remote_addr} uri={js['connections'][0]['uri']}..."
     )
 
-    partlock.acquire()
-    if part in partitions:
-        store = partitions[part]
-    else:
-        store = {}
-        partitions[part] = store
-        global maxpartitions
-        if len(partitions) > maxpartitions:
-            maxpartitions = len(partitions)
-        if part not in maxentries:
-            maxentries[part] = 0
+    with partlock:
+        if part in partitions:
+            store = partitions[part]
+        else:
+            store = {}
+            partitions[part] = store
+            global maxpartitions
+            if len(partitions) > maxpartitions:
+                maxpartitions = len(partitions)
+            if part not in maxentries:
+                maxentries[part] = 0
 
-    Connection = namedtuple(
-        "Connection", ["uri", "data_type", "capacity", "connection_type", "time"]
-    )
+        registered_partition_applications = list(store.keys())
 
-    for connection in js["connections"]:
-        if "uid" in connection and "uri" in connection:
-            uid = connection["uid"]
+        Connection = namedtuple(
+            "Connection", ["uri", "data_type", "capacity", "connection_type", "time"]
+        )
+
+        for connection in js["connections"]:
+            if "uid" in connection and "uri" in connection:
+                uid = connection["uid"]
+                now = datetime.now()
+
+                if uid in registered_partition_applications:
+                    log.debug(f"Updating address of existing application {uid} with uri {connection['uri']}")
+                else:
+                    _uri = connection["uri"]
+                    _port = urlparse(_uri).port
+                    _hostname = map_uri_to_hostname(_uri)
+                    log.info(f"Registering new application {uid} with uri {_uri} ({_hostname}:{_port})")
+
+                store[uid] = Connection(
+                    uri=connection["uri"],
+                    connection_type=connection["connection_type"],
+                    data_type=connection["data_type"],
+                    capacity=(
+                        connection["capacity"] if "capacity" in connection else 0
+                    ),
+                    time=timestamp,
+                )
+
             now = datetime.now()
-            log.info(f"uid={uid}")
+            elapsed = now - timestamp
 
-            store[uid] = Connection(
-                uri=connection["uri"],
-                connection_type=connection["connection_type"],
-                data_type=connection["data_type"],
-                capacity=(
-                    connection["capacity"] if "capacity" in connection else 0
-                ),  # Backwards compatibility
-                time=timestamp,
+            log.debug(
+                f"Took {elapsed.microseconds} us to add {len(js['connections'])} connections"
             )
 
-    now = datetime.now()
-    elapsed = now - timestamp
+            global npublishes, publish_time
+            publish_time += elapsed
+            npublishes += 1
 
-    log.debug(
-        f"Took {elapsed.microseconds} us to add {len(js['connections'])} connections"
-    )
+            if len(store) > maxentries[part]:
+                maxentries[part] = len(store)
 
-    global npublishes, publish_time
-    publish_time += elapsed
-    npublishes += 1
-
-    if len(store) > maxentries[part]:
-        maxentries[part] = len(store)
-
-    partlock.release()
     return "OK"
 
 
@@ -335,7 +365,7 @@ def get_connection(part):
     log.debug(f"{js=}")
 
     if "uid_regex" in js and "data_type" in js:
-        log.info(
+        log.debug(
             f"Searching for connections matching uid_regex<{js['uid_regex']}> and data_type {js['data_type']}"
         )
 
@@ -381,7 +411,7 @@ def get_connection(part):
             return "[" + ",".join(result) + "]"
 
         partlock.release()
-        log.info(f"Partition {part} not found")
+        log.debug(f"Partition {part} not found")
         abort(404)
     else:
         abort(400)
