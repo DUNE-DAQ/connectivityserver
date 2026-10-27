@@ -17,28 +17,21 @@ from urllib.parse import urlparse
 
 from flask import Flask, abort, make_response, request
 from daqpytools.logging import get_daq_logger
-
+import logging 
 # Some functions exit with an abort(NNN) instead of return so don't complain!
 # ruff: noqa RET503
 
 partitions = {}
 partlock = Lock()
 
-if "CONNECTION_FLASK_DEBUG" in os.environ:
-    debug_level = int(os.environ["CONNECTION_FLASK_DEBUG"])
-else:
-    debug_level = 1
-
-
-def convert_log_level(log_level):
-    if log_level == 0:
-        return 30# logging.WARNING
-    if log_level == 1:
-        return 20# logging.INFO
-    if log_level == 2:
-        return 10# logging.DEBUG
-    return 20# logging.INFO
-
+# See README for logging explanations and use of CONNECTION_FLASK_DEBUG
+debug_level = int(os.environ["CONNECTION_FLASK_DEBUG"]) if "CONNECTION_FLASK_DEBUG" in os.environ else 1
+log_level_mapping = {
+    0 : logging.WARNING,
+    1 : logging.INFO,
+    2 : logging.DEBUG,
+}
+log = get_daq_logger(__name__, log_level=log_level_mapping.get(debug_level, logging.INFO), stream_handlers=True)
 
 def map_uri_to_hostname(uri: str) -> str:
     """
@@ -55,7 +48,7 @@ def map_uri_to_hostname(uri: str) -> str:
     """
 
     try:
-       ip_address = urlparse(uri).hostname
+        ip_address = urlparse(uri).hostname
         if not ip_address:
             raise ValueError(f"Invalid URI format: {uri}. No hostname found.")
 
@@ -68,10 +61,6 @@ def map_uri_to_hostname(uri: str) -> str:
         return f"Error parsing URI or resolving host: {e}"
 
 
-
-
-
-log = get_daq_logger(__name__, log_level=convert_log_level(debug_level), stream_handlers=True)
 
 if "ENTRY_TTL" in os.environ:
     ttl = int(os.environ["ENTRY_TTL"])
@@ -273,9 +262,6 @@ def publish():
                 uid = connection["uid"]
                 now = datetime.now()
 
-                # current_keys = [str(k) for k in store.keys()]
-                # keys_str = ", ".join(str(k) for k in store.keys())
-                # log.warning(f"store_keys={keys_str}")
                 if uid in registered_partition_applications:
                     log.debug(f"Updating address of existing application {uid} with uri {connection['uri']}")
                 else:
@@ -308,7 +294,6 @@ def publish():
             if len(store) > maxentries[part]:
                 maxentries[part] = len(store)
 
-
     return "OK"
 
 
@@ -318,7 +303,7 @@ def retract_partition():
         abort(400)
 
     js = json.loads(request.data)
-    log.warning(f"request=[{js}]")
+    log.debug(f"request=[{js}]")
 
     if "partition" not in js:
         abort(400)
