@@ -107,6 +107,19 @@ def test_dump(client):
     assert b"Dump" in resp.data
 
 
+def test_stats_snapshots_maxentries_under_partlock(client, monkeypatch):
+    class LockCheckedDict(dict):
+        def copy(self):
+            assert cf.partlock.locked()
+            return super().copy()
+
+    monkeypatch.setattr(cf, "maxentries", LockCheckedDict({"ccTest": 3}))
+
+    resp = client.get("/stats")
+    assert resp.status_code == 200
+    assert b"Maximum entries in partition ccTest = 3" in resp.data
+
+
 def test_stats(client):
     resp = client.get("/stats")
     assert resp.status_code == 200

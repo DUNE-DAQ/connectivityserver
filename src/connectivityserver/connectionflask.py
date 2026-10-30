@@ -100,24 +100,28 @@ def ready():
 @app.route("/")
 def dump():
     now = datetime.now()
+    with partlock:
+        partition_snapshot = {
+            part: tuple(store.items()) for part, store in partitions.items()
+        }
+
     dstream = StringIO()
     dstream.write("<h1>Dump of configuration dictionary</h1>")
     dstream.write("<h2>Active partitions</h2><p>")
-    if len(partitions) > 0:
+    if partition_snapshot:
         pad = ' style="padding-left: 1em;padding-right: 1em"'
         dstream.write(
             f'<table style="border: 1px solid black">'
             f'<tr style="background: #e0e0e0"><th{pad}>Partition</th>'
             f"<th{pad}>Entries</th></tr>"
         )
-        for p in partitions:
+        for p, entries in partition_snapshot.items():
             dstream.write(
-                f"<tr><td{pad}>{p}</td><td{pad}>{len(partitions[p])}</td></tr>"
+                f"<tr><td{pad}>{p}</td><td{pad}>{len(entries)}</td></tr>"
             )
         dstream.write("</table>")
         dstream.write(f"<h2>Partitions</h2>")
-        for p in partitions:
-            store = partitions[p]
+        for p, store in partition_snapshot.items():
             dstream.write(f"<h3>{p}</h3>")
             dstream.write(
                 f'<table style="border: 1px solid black">'
@@ -137,7 +141,7 @@ def dump():
             format_cell = lambda value, strike: (
                 f'<span style="color: red;">{value}</span>' if strike else f"{value}"
             )
-            for k, v in store.items():
+            for k, v in store:
                 expired = now - v.time >= entry_ttl
                 resolved_hostname = urlparse(v.uri).scheme + "://" + map_uri_to_hostname(v.uri) # Call resolution function
                 
@@ -178,9 +182,11 @@ def stats_to_html(dstream):
         f"(average {avg_lookup.microseconds} &micro;s per call)</p>"
     )
     dstream.write(f"<p>Maximum number of partitions active = {maxpartitions}</p>")
-    for part in maxentries:
+    with partlock:
+        maxentries_snapshot = maxentries.copy()
+    for part, entry_count in maxentries_snapshot.items():
         dstream.write(
-            f"<p>Maximum entries in partition {part} = {maxentries[part]}</p>"
+            f"<p>Maximum entries in partition {part} = {entry_count}</p>"
         )
 
 
