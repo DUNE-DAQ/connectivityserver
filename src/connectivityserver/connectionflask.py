@@ -182,9 +182,11 @@ def stats_to_html(dstream):
         f"(average {avg_lookup.microseconds} &micro;s per call)</p>"
     )
     dstream.write(f"<p>Maximum number of partitions active = {maxpartitions}</p>")
-    for part in maxentries:
+    with partlock:
+        maxentries_snapshot = maxentries.copy()
+    for part, entry_count in maxentries_snapshot.items():
         dstream.write(
-            f"<p>Maximum entries in partition {part} = {maxentries[part]}</p>"
+            f"<p>Maximum entries in partition {part} = {entry_count}</p>"
         )
 
 
