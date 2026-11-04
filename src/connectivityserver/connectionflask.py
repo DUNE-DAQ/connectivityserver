@@ -108,9 +108,9 @@ def map_uri_to_hostname(uri: str) -> str:
 
 def resolve_uri_hostname(uri: str) -> str:
     """
-    Resolve a URI hostname, using the local host for Kubernetes DNS names.
+    Resolve a URI hostname using the system resolver.
 
-    The local outbound IP identifies this server, not a remote pod's node.
+    A missing or malformed hostname uses the local outbound IP instead.
 
     Args:
         uri (str): The URI string to be resolved.
@@ -127,17 +127,12 @@ def resolve_uri_hostname(uri: str) -> str:
         log.debug(f"Could not parse {uri}, using the local outbound IP")
         return resolve_local_hostname()
 
-    if re.search(r"\.(?:svc|pod)\.", ip_address, re.IGNORECASE):
-        return resolve_local_hostname()
-    hostname = resolve_hostname(ip_address)
-    if re.search(r"\.(?:svc|pod)\.", hostname, re.IGNORECASE):
-        return resolve_local_hostname()
-    return hostname
+    return resolve_hostname(ip_address)
 
 
 def resolve_local_hostname() -> str:
     """
-    Resolve this server's outbound IP to a non-Kubernetes hostname.
+    Resolve this server's outbound IP using the system resolver.
 
     Returns:
         str: The local hostname, or an empty string if no suitable name is found.
@@ -151,15 +146,7 @@ def resolve_local_hostname() -> str:
         log.warning("Could not determine the local outbound IP: %s", e)
         return ""
 
-    hostname = resolve_hostname(ip_address)
-    if re.search(r"\.(?:svc|pod)\.", hostname, re.IGNORECASE):
-        log.warning(
-            "Local outbound IP %s resolves to Kubernetes name %s; "
-            "cannot determine the physical host from DNS",
-            ip_address, hostname,
-        )
-        return ""
-    return hostname
+    return resolve_hostname(ip_address)
 
 
 def resolve_hostname(ip_address: str) -> str:
@@ -212,7 +199,71 @@ def resolve_hostname(ip_address: str) -> str:
         return ""
 
 
-def map_uri_to_resolved_uri(uri: str) -> str:
+def resolve_published_hostnames(uris):
+    """
+    Index forward-verified canonical hostnames by IP for the dump snapshot.
+
+    Explicitly published hostnames take precedence over arbitrary reverse-DNS
+    names for the same address. Ambiguous addresses are not overridden.
+
+    Args:
+        uris (iterable): Published URI strings.
+
+    Returns:
+        dict: IP addresses mapped to unambiguous canonical hostnames.
+    """
+    hosts = set()
+    for uri in uris:
+        try:
+            host = urlparse(uri).hostname
+        except ValueError:
+            continue
+        if host:
+            hosts.add(host)
+
+    candidates = {}
+    for host in sorted(hosts):
+        try:
+            parse_ip_address(host)
+        except ValueError:
+            pass
+        else:
+            continue
+        try:
+            addresses = socket.getaddrinfo(
+                host, None, family=socket.AF_UNSPEC,
+                type=socket.SOCK_STREAM, flags=socket.AI_CANONNAME,
+            )
+        except OSError as e:
+            log.warning("Could not forward-resolve published host %s: %s", host, e)
+            continue
+        canonical = host.rstrip(".")
+        for _, _, _, name, _ in addresses:
+            if name:
+                canonical = name.rstrip(".")
+                break
+        try:
+            parse_ip_address(canonical)
+        except ValueError:
+            if "." not in canonical:
+                continue
+        else:
+            continue
+        for _, _, _, _, sockaddr in addresses:
+            address = str(parse_ip_address(sockaddr[0]))
+            candidates.setdefault(address, set()).add(canonical.lower())
+
+    result = {}
+    for address, names in candidates.items():
+        if len(names) == 1:
+            result[address] = next(iter(names))
+        else:
+            log.warning("Multiple published hostnames for %s: %s; retaining DNS result",
+                        address, ", ".join(sorted(names)))
+    return result
+
+
+def map_uri_to_resolved_uri(uri: str, published_hostnames=None, display_hostname="") -> str:
     """
     Resolve the hostname and replace it in the URI.
 
@@ -221,6 +272,9 @@ def map_uri_to_resolved_uri(uri: str) -> str:
 
     Args:
         uri (str): The URI string to be resolved.
+        published_hostnames (dict): Optional forward-verified IP-to-name mapping.
+        display_hostname (str): Publisher-supplied physical hostname, preferred
+            over IP-based resolution. Use it unchanged if DNS fails.
 
     Returns:
         str: The resolved URI with the hostname replaced, or the original URI if resolution fails.
@@ -237,7 +291,18 @@ def map_uri_to_resolved_uri(uri: str) -> str:
         return uri
 
     # Get the resolved hostname for the URI.
-    hostname = map_uri_to_hostname(uri)
+    hostname = ""
+    if display_hostname:
+        hostname = map_uri_to_hostname(f"//{display_hostname}") or display_hostname.rstrip(".")
+    elif published_hostnames:
+        try:
+            address = str(parse_ip_address(parsed.hostname))
+        except ValueError:
+            pass
+        else:
+            hostname = published_hostnames.get(address, "")
+    if not hostname:
+        hostname = map_uri_to_hostname(uri)
     if not hostname:
         return uri
 
@@ -349,6 +414,10 @@ def dump():
     with partlock:
         partition_copy = {p: store.copy() for p, store in partitions.items()}
 
+    published_hostnames = resolve_published_hostnames(
+        entry.uri for store in partition_copy.values() for entry in store.values()
+    )
+
     # If there are partitions, generate the HTML table for them.
     if partition_copy:
         pad = ' style="padding-left: 1em;padding-right: 1em"'
@@ -393,7 +462,7 @@ def dump():
             # Iterate over each entry in the partition and generate its HTML row.
             for k, v in store.items():
                 expired = now - v.time >= entry_ttl
-                resolved_hostname = map_uri_to_resolved_uri(v.uri)
+                resolved_hostname = map_uri_to_resolved_uri(v.uri, published_hostnames, v.hostname)
 
                 dstream.write(
                     f"<tr><td{pad}>{format_cell(k, expired)}</td>"
@@ -553,7 +622,8 @@ def publish():
                 "uri": "<connection_uri>",
                 "connection_type": 0,
                 "data_type": "<data_type>",
-                "capacity": 0
+                "capacity": 0,
+                "hostname": "<optional physical hostname for display>"
             },
             ...
         ]
@@ -582,6 +652,18 @@ def publish():
             invalid_request("connection_type must be an integer")
         if "capacity" in connection and type(connection["capacity"]) is not int:
             invalid_request("capacity must be an integer")
+        if "hostname" in connection:
+            hostname = connection["hostname"]
+            if (
+                not isinstance(hostname, str)
+                or not hostname
+                or len(hostname) > 253
+                or any(
+                    re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) is None
+                    for label in (hostname[:-1] if hostname.endswith(".") else hostname).split(".")
+                )
+            ):
+                invalid_request("hostname must be a non-empty DNS hostname, not a URI")
 
     # Log the incoming request for debugging
     log.debug(f"{js=}")
@@ -599,7 +681,8 @@ def publish():
         if "uid" in connection and "uri" in connection:
             _uri = connection["uri"]
             _port = map_uri_to_port(_uri)
-            _hostname = map_uri_to_hostname(_uri)
+            display_host = connection.get("hostname", "")
+            _hostname = map_uri_to_hostname(f"//{display_host}" if display_host else _uri) or display_host
         connection_details.append((connection, _port, _hostname))
 
     with partlock:
@@ -623,7 +706,7 @@ def publish():
 
         # Define a named tuple to store connection details in a structured manner.
         Connection = namedtuple(
-            "Connection", ["uri", "data_type", "capacity", "connection_type", "time"]
+            "Connection", ["uri", "data_type", "capacity", "connection_type", "time", "hostname"]
         )
 
         # Iterate over each connection and update the store accordingly.
@@ -648,6 +731,7 @@ def publish():
                         connection["capacity"] if "capacity" in connection else 0
                     ),
                     time=timestamp,
+                    hostname=connection.get("hostname", ""),
                 )
 
         # Log the completion of processing all connections for this partition.
