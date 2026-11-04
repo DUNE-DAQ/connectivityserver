@@ -12,7 +12,7 @@ from collections import namedtuple
 from datetime import datetime, timedelta
 from io import StringIO
 import socket
-from threading import Lock
+from threading import RLock
 from urllib.parse import urlparse
 
 from flask import Flask, abort, make_response, request
@@ -22,7 +22,7 @@ import logging
 # ruff: noqa RET503
 
 partitions = {}
-partlock = Lock()
+partlock = RLock()
 
 # See README for logging explanations and use of CONNECTION_FLASK_DEBUG
 debug_level = int(os.environ["CONNECTION_FLASK_DEBUG"]) if "CONNECTION_FLASK_DEBUG" in os.environ else 1
@@ -35,16 +35,13 @@ log = get_daq_logger(__name__, log_level=log_level_mapping.get(debug_level, logg
 
 def map_uri_to_hostname(uri: str) -> str:
     """
-    Map a URI to a hostname. This function is used to extract the hostname from a URI string.
+    Map a URI to a hostname.
 
     Args:
         uri (str): The URI string to be mapped.
 
     Returns:
-        str: The extracted hostname from the URI.
-
-    Raises:
-        ValueError: If the URI is not in a valid format or does not contain a hostname.
+        str: The resolved hostname or an empty string if resolution fails.
     """
 
     try:
@@ -52,13 +49,22 @@ def map_uri_to_hostname(uri: str) -> str:
         if not ip_address:
             raise ValueError(f"Invalid URI format: {uri}. No hostname found.")
 
-        hostname, aliases, ip_list = socket.gethostbyaddr(ip_address)
-        return hostname
+    except ValueError as e:
+        log.debug(f"Could not parse {uri}, using the local outbound IP")
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("10.255.255.255", 1))
+                ip_address = s.getsockname()[0]
+        except OSError as e:
+            log.warning(f"Could not determine the local outbound IP for URI {uri}: {e}")
+            return ""
 
-    except socket.herror:
-        return f"No reverse DNS record found for IP: {ip_address}"
-    except Exception as e:
-        return f"Error parsing URI or resolving host: {e}"
+    try:
+        hostname, _, _ = socket.gethostbyaddr(ip_address)
+        return hostname
+    except (socket.herror, socket.gaierror, OSError) as e:
+        log.debug(f"Could not resolve host {ip_address}: {e}")
+        return ""
 
 
 
@@ -103,31 +109,34 @@ def dump():
     dstream = StringIO()
     dstream.write("<h1>Dump of configuration dictionary</h1>")
     dstream.write("<h2>Active partitions</h2><p>")
-    if len(partitions) > 0:
+    with partlock:
+        partition_copy = {p: store.copy() for p, store in partitions.items()}
+
+    if partition_copy:
         pad = ' style="padding-left: 1em;padding-right: 1em"'
         dstream.write(
             f'<table style="border: 1px solid black">'
             f'<tr style="background: #e0e0e0"><th{pad}>Partition</th>'
             f"<th{pad}>Entries</th></tr>"
         )
-        for p in partitions:
+        for p in partition_copy:
             dstream.write(
-                f"<tr><td{pad}>{p}</td><td{pad}>{len(partitions[p])}</td></tr>"
+                f"<tr><td{pad}>{p}</td><td{pad}>{len(partition_copy[p])}</td></tr>"
             )
         dstream.write("</table>")
         dstream.write(f"<h2>Partitions</h2>")
-        for p in partitions:
-            store = partitions[p]
+        for p in partition_copy:
+            store = partition_copy[p]
             dstream.write(f"<h3>{p}</h3>")
             dstream.write(
                 f'<table style="border: 1px solid black">'
                 f'<tr style="background: #e0e0e0">'
                 f'<th{pad} rowspan="2">Name</th>'
-                f'<th{pad} colspan="6">Connection</th>'  # Increased colspan from 5 to 6
+                f'<th{pad} colspan="6">Connection</th>'
                 f"</tr>"
                 f'<tr style="background: #e0e0e0">'
                 f"<th{pad}>uri</th>"
-                f"<th{pad}>uri (resolved)</th>"         # Added the new header entry
+                f"<th{pad}>uri (resolved)</th>"
                 f"<th{pad}>data_type</th>"
                 f"<th{pad}>capacity</th>"
                 f"<th{pad}>connection_type</th>"
@@ -140,7 +149,7 @@ def dump():
             for k, v in store.items():
                 expired = now - v.time >= entry_ttl
                 resolved_hostname = urlparse(v.uri).scheme + "://" + map_uri_to_hostname(v.uri) # Call resolution function
-                
+
                 dstream.write(
                     f"<tr><td{pad}>{format_cell(k, expired)}</td>"
                     f"<td{pad}>{format_cell(v.uri, expired)}</td>"
@@ -160,28 +169,29 @@ def dump():
 
 
 def stats_to_html(dstream):
-    dstream.write(f"<p>Since {last_stats}</p>")
-    if npublishes > 0:
-        avg_pub = publish_time / npublishes
-    else:
-        avg_pub = timedelta()
-    dstream.write(
-        f"<p>{npublishes} calls to publish in total time {publish_time} "
-        f"(average {avg_pub.microseconds} &micro;s per call)</p>"
-    )
-    if nlookups > 0:
-        avg_lookup = lookup_time / nlookups
-    else:
-        avg_lookup = timedelta()
-    dstream.write(
-        f"<p>{nlookups} calls to lookup in total time {lookup_time} "
-        f"(average {avg_lookup.microseconds} &micro;s per call)</p>"
-    )
-    dstream.write(f"<p>Maximum number of partitions active = {maxpartitions}</p>")
-    for part in maxentries:
+    with partlock:
+        dstream.write(f"<p>Since {last_stats}</p>")
+        if npublishes > 0:
+            avg_pub = publish_time / npublishes
+        else:
+            avg_pub = timedelta()
         dstream.write(
-            f"<p>Maximum entries in partition {part} = {maxentries[part]}</p>"
+            f"<p>{npublishes} calls to publish in total time {publish_time} "
+            f"(average {avg_pub.microseconds} &micro;s per call)</p>"
         )
+        if nlookups > 0:
+            avg_lookup = lookup_time / nlookups
+        else:
+            avg_lookup = timedelta()
+        dstream.write(
+            f"<p>{nlookups} calls to lookup in total time {lookup_time} "
+            f"(average {avg_lookup.microseconds} &micro;s per call)</p>"
+        )
+        dstream.write(f"<p>Maximum number of partitions active = {maxpartitions}</p>")
+        for part in maxentries:
+            dstream.write(
+                f"<p>Maximum entries in partition {part} = {maxentries[part]}</p>"
+            )
 
 
 @app.route("/stats")
@@ -195,8 +205,6 @@ def dumpStats():
 
 @app.route("/resetStats")
 def resetStats():
-    stats = dumpStats()
-
     global \
         last_stats, \
         npublishes, \
@@ -206,13 +214,15 @@ def resetStats():
         maxpartitions, \
         maxentries
 
-    last_stats = datetime.now()
-    npublishes = 0
-    nlookups = 0
-    lookup_time = timedelta(0)
-    publish_time = timedelta()
-    maxpartitions = 0
-    maxentries = {}
+    with partlock:
+        stats = dumpStats()
+        last_stats = datetime.now()
+        npublishes = 0
+        nlookups = 0
+        lookup_time = timedelta(0)
+        publish_time = timedelta()
+        maxpartitions = 0
+        maxentries = {}
 
     return stats
 
@@ -221,8 +231,9 @@ def resetStats():
 def reset():
 
     global partitions
-    partitions = {}
-    return resetStats()
+    with partlock:
+        partitions = {}
+        return resetStats()
 
 
 @app.route("/publish", methods=["POST"])
@@ -245,11 +256,12 @@ def publish():
         else:
             store = {}
             partitions[part] = store
-            global maxpartitions
-            if len(partitions) > maxpartitions:
-                maxpartitions = len(partitions)
-            if part not in maxentries:
-                maxentries[part] = 0
+
+        global maxpartitions
+        if len(partitions) > maxpartitions:
+            maxpartitions = len(partitions)
+        if part not in maxentries:
+            maxentries[part] = 0
 
         registered_partition_applications = list(store.keys())
 
@@ -309,13 +321,10 @@ def retract_partition():
         abort(400)
 
     part = js["partition"]
-    partlock.acquire()
-
-    if part in partitions:
-        partitions.pop(part)
-        partlock.release()
-        return "OK"
-    partlock.release()
+    with partlock:
+        if part in partitions:
+            partitions.pop(part)
+            return "OK"
     abort(404)
 
 
@@ -327,26 +336,24 @@ def retract():
     js = json.loads(request.data)
     good = True
     part = js["partition"]
-    partlock.acquire()
-    if part not in partitions:
-        partlock.release()
-        return make_response(f"Partition {part} not found", 404)
+    with partlock:
+        if part not in partitions:
+            return make_response(f"Partition {part} not found", 404)
 
-    store = partitions[part]
-    if "connections" not in js:
-        abort(400)
-    for con in js["connections"]:
-        id = con["connection_id"]
-        if id in store:
-            store.pop(id)
-        else:
-            log.info(f"Could not find connection_id <{id}>")
-            good = False
-    if len(store) == 0:
-        # We've deleted the last entry in this partition so delete the
-        # partition as well
-        partitions.pop(part)
-    partlock.release()
+        store = partitions[part]
+        if "connections" not in js:
+            abort(400)
+        for con in js["connections"]:
+            id = con["connection_id"]
+            if id in store:
+                store.pop(id)
+            else:
+                log.info(f"Could not find connection_id <{id}>")
+                good = False
+        if len(store) == 0:
+            # We've deleted the last entry in this partition so delete the
+            # partition as well
+            partitions.pop(part)
     if good:
         return "OK"
     abort(404)
@@ -403,10 +410,9 @@ def get_connection(part):
                 f"Lookup took {td.microseconds} us to find {len(result)} connections"
             )
             global nlookups, lookup_time
-            # Should we have the lock while updating statistics? It doesn't
-            # really matter if the stats aren't entirely accurate.
-            nlookups += 1
-            lookup_time += td
+            with partlock:
+                nlookups += 1
+                lookup_time += td
 
             return "[" + ",".join(result) + "]"
 
