@@ -33,6 +33,50 @@ log_level_mapping = {
 }
 log = get_daq_logger(__name__, log_level=log_level_mapping.get(debug_level, logging.INFO), stream_handlers=True)
 
+def map_uri_to_scheme(uri: str) -> str:
+    """
+    Extract a scheme from a URI.
+
+    Args:
+        uri (str): The URI string to be parsed.
+
+    Returns:
+        str: The scheme, or an empty string if absent or invalid.
+    """
+
+    if not isinstance(uri, str):
+        log.warning("Could not parse URI scheme: expected a string, got %s", type(uri).__name__)
+        return ""
+
+    try:
+        return urlparse(uri).scheme
+    except ValueError as e:
+        log.warning("Could not parse scheme for URI %r: %s", uri, e)
+        return ""
+
+
+def map_uri_to_port(uri: str):
+    """
+    Extract a port from a URI.
+
+    Args:
+        uri (str): The URI string to be parsed.
+
+    Returns:
+        int, str or None: The port, None if absent, or an empty string if invalid.
+    """
+
+    if not isinstance(uri, str):
+        log.warning("Could not parse URI port: expected a string, got %s", type(uri).__name__)
+        return ""
+
+    try:
+        return urlparse(uri).port
+    except ValueError as e:
+        log.warning("Could not parse port for URI %r: %s", uri, e)
+        return ""
+
+
 def map_uri_to_hostname(uri: str) -> str:
     """
     Map a URI to a hostname.
@@ -53,6 +97,7 @@ def map_uri_to_hostname(uri: str) -> str:
         log.debug(f"Could not parse {uri}, using the local outbound IP")
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(0.1)
                 s.connect(("10.255.255.255", 1))
                 ip_address = s.getsockname()[0]
         except OSError as e:
@@ -148,7 +193,7 @@ def dump():
             )
             for k, v in store.items():
                 expired = now - v.time >= entry_ttl
-                resolved_hostname = urlparse(v.uri).scheme + "://" + map_uri_to_hostname(v.uri) # Call resolution function
+                resolved_hostname = map_uri_to_scheme(v.uri) + "://" + map_uri_to_hostname(v.uri)
 
                 dstream.write(
                     f"<tr><td{pad}>{format_cell(k, expired)}</td>"
@@ -238,6 +283,29 @@ def reset():
 
 @app.route("/publish", methods=["POST"])
 def publish():
+    """
+    Register connection information for a given partition.
+    Expects a JSON payload with the following structure:
+    {
+        "partition": "<partition_name>",
+        "connections": [
+            {
+                "uid": "<unique_id>",
+                "uri": "<connection_uri>",
+                "connection_type": "<type>",
+                "data_type": "<data_type>",
+                "capacity": <capacity>  # optional
+            },
+            ...
+        ]
+    }
+
+    Returns:
+        str: "OK" if the connections were successfully published.
+
+    Raises:
+        ValueError: If the JSON payload is invalid or missing required fields.
+    """
     #  Store multiple connection ids and corresponding uris in a
     #  dictionary associated with the appropriate partition.
     timestamp = datetime.now()
@@ -278,7 +346,7 @@ def publish():
                     log.debug(f"Updating address of existing application {uid} with uri {connection['uri']}")
                 else:
                     _uri = connection["uri"]
-                    _port = urlparse(_uri).port
+                    _port = map_uri_to_port(_uri)
                     _hostname = map_uri_to_hostname(_uri)
                     log.info(f"Registering new application {uid} with uri {_uri} ({_hostname}:{_port})")
 
@@ -379,45 +447,44 @@ def get_connection(part):
         result = []
         regex = re.compile(js["uid_regex"])
         dt = js["data_type"]
-        partlock.acquire()
+        matched = []
 
-        if part in partitions:
-            store = partitions[part]
-            matched = []
-            for uid, con in store.items():
-                if (
-                    regex.fullmatch(uid)
-                    and con.data_type == dt
-                    and now - con.time < entry_ttl
-                ):
-                    matched.append((uid, con))
-            partlock.release()
-            # We should now be able to construct JSON string while other threads
-            # have access to the partition dict
-            for uid, con in matched:
-                result.append(
-                    "{"
-                    f'"uid":"{uid}",'
-                    f'"uri":"{con.uri}",'
-                    f'"connection_type":{con.connection_type},'
-                    f'"data_type":"{con.data_type}",'
-                    f'"capacity":{con.capacity}'
-                    "}"
-                )
-
-            td = datetime.now() - now
-            log.debug(
-                f"Lookup took {td.microseconds} us to find {len(result)} connections"
+        with partlock:
+            if part in partitions:
+                store = partitions[part]
+                for uid, con in store.items():
+                    if (
+                        regex.fullmatch(uid)
+                        and con.data_type == dt
+                        and now - con.time < entry_ttl
+                    ):
+                        matched.append((uid, con))
+            else:
+                log.debug(f"Partition {part} not found")
+                abort(404)
+        # We should now be able to construct JSON string while other threads
+        # have access to the partition dict
+        for uid, con in matched:
+            result.append(
+                "{"
+                f'"uid":"{uid}",'
+                f'"uri":"{con.uri}",'
+                f'"connection_type":{con.connection_type},'
+                f'"data_type":"{con.data_type}",'
+                f'"capacity":{con.capacity}'
+                "}"
             )
-            global nlookups, lookup_time
-            with partlock:
-                nlookups += 1
-                lookup_time += td
 
-            return "[" + ",".join(result) + "]"
+        td = datetime.now() - now
+        log.debug(
+            f"Lookup took {td.microseconds} us to find {len(result)} connections"
+        )
+        global nlookups, lookup_time
+        with partlock:
+            nlookups += 1
+            lookup_time += td
 
-        partlock.release()
-        log.debug(f"Partition {part} not found")
-        abort(404)
+        return "[" + ",".join(result) + "]"
+
     else:
         abort(400)
