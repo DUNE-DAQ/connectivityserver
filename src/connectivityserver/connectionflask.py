@@ -8,347 +8,33 @@
 import json
 import os
 import re
-from collections import OrderedDict, namedtuple
+import time
 from datetime import datetime, timedelta
 from html import escape
-from ipaddress import ip_address as parse_ip_address
 from io import StringIO
-import socket
-import time
 from threading import RLock
-from urllib.parse import urlparse
 
 from flask import Flask, abort, jsonify, make_response, request
-from daqpytools.logging import get_daq_logger
-import logging
+
+from connectivityserver.utils import (
+    Connection,
+    format_cell,
+    log,
+    map_uri_to_hostname,
+    map_uri_to_port,
+    map_uri_to_resolved_uri,
+    stats_to_html,
+)
 
 partitions = {}
 partlock = RLock()
-hostname_cache = OrderedDict()
-hostname_cache_lock = RLock()
-
-# See README for logging explanations and use of CONNECTION_FLASK_DEBUG
-debug_level = int(os.environ["CONNECTION_FLASK_DEBUG"]) if "CONNECTION_FLASK_DEBUG" in os.environ else 1
-log_level_mapping = {
-    0 : logging.WARNING,
-    1 : logging.INFO,
-    2 : logging.DEBUG,
-}
-log = get_daq_logger(__name__, log_level=log_level_mapping.get(debug_level, logging.INFO), stream_handlers=True)
-
-def map_uri_to_scheme(uri: str) -> str:
-    """
-    Extract a scheme from a URI.
-
-    Args:
-        uri (str): The URI string to be parsed.
-
-    Returns:
-        str: The scheme, or an empty string if absent or invalid.
-    """
-    if not isinstance(uri, str):
-        log.warning("Could not parse URI scheme: expected a string, got %s", type(uri).__name__)
-        return ""
-
-    try:
-        return urlparse(uri).scheme
-    except ValueError as e:
-        log.warning("Could not parse scheme for URI %r: %s", uri, e)
-        return ""
-
-
-def map_uri_to_port(uri: str):
-    """
-    Extract a port from a URI.
-
-    Args:
-        uri (str): The URI string to be parsed.
-
-    Returns:
-        int, str or None: The port, None if absent, or an empty string if invalid.
-    """
-    if not isinstance(uri, str):
-        log.warning("Could not parse URI port: expected a string, got %s", type(uri).__name__)
-        return ""
-
-    try:
-        return urlparse(uri).port
-    except ValueError as e:
-        log.warning("Could not parse port for URI %r: %s", uri, e)
-        return ""
-
-
-def map_uri_to_hostname(uri: str) -> str:
-    """
-    Map a URI to a hostname, preferring a fully qualified name.
-
-    Args:
-        uri (str): The URI string to be mapped.
-
-    Returns:
-        str: The resolved hostname or an empty string if resolution fails.
-    """
-    with hostname_cache_lock:
-        entry = hostname_cache.get(uri)
-        if entry is not None:
-            hostname, expires = entry
-            if time.monotonic() < expires:
-                hostname_cache.move_to_end(uri)
-                return hostname
-            del hostname_cache[uri]
-
-    hostname = resolve_uri_hostname(uri)
-    with hostname_cache_lock:
-        hostname_cache[uri] = (hostname, time.monotonic() + 3600)
-        hostname_cache.move_to_end(uri)
-        while len(hostname_cache) > 4096:
-            hostname_cache.popitem(last=False)
-    return hostname
-
-
-def resolve_uri_hostname(uri: str) -> str:
-    """
-    Resolve a URI hostname using the system resolver.
-
-    A missing or malformed hostname uses the local outbound IP instead.
-
-    Args:
-        uri (str): The URI string to be resolved.
-
-    Returns:
-        str: The resolved hostname or an empty string if resolution fails.
-    """
-    try:
-        ip_address = urlparse(uri).hostname
-        if not ip_address:
-            raise ValueError(f"Invalid URI format: {uri}. No hostname found.")
-
-    except ValueError:
-        log.debug(f"Could not parse {uri}, using the local outbound IP")
-        return resolve_local_hostname()
-
-    return resolve_hostname(ip_address)
-
-
-def resolve_local_hostname() -> str:
-    """
-    Resolve this server's outbound IP using the system resolver.
-
-    Returns:
-        str: The local hostname, or an empty string if no suitable name is found.
-    """
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.settimeout(0.1)
-            s.connect(("10.255.255.255", 1))
-            ip_address = s.getsockname()[0]
-    except OSError as e:
-        log.warning("Could not determine the local outbound IP: %s", e)
-        return ""
-
-    return resolve_hostname(ip_address)
-
-
-def resolve_hostname(ip_address: str) -> str:
-    """
-    Resolve a host or IP address, preferring a fully qualified name.
-
-    Args:
-        ip_address (str): The hostname or IP address to resolve.
-
-    Returns:
-        str: The resolved hostname or an empty string if resolution fails.
-    """
-    # Parse the IP address from the hostname. If parsing fails, set address to None.
-    try:
-        address = parse_ip_address(ip_address)
-    except ValueError:
-        address = None
-
-    # Attempt to resolve the hostname to a fully qualified domain name.
-    try:
-        if address is not None:
-            hostname, aliases, _ = socket.gethostbyaddr(str(address))
-        else:
-            addresses = socket.getaddrinfo(
-                ip_address,
-                None, # No port or service is requested
-                family=socket.AF_UNSPEC, # Allow both IPv4 and IPv6 addresses
-                type=socket.SOCK_STREAM, # Use stream sockets (TCP)
-                flags=socket.AI_CANONNAME, # Request the canonical name of the host
-            )
-            for _, _, _, canonical, _ in addresses:
-                if "." in canonical.rstrip("."):
-                    return canonical.rstrip(".")
-            for _, _, _, _, sockaddr in addresses:
-                try:
-                    hostname, aliases, _ = socket.gethostbyaddr(sockaddr[0])
-                    for candidate in [hostname] + aliases:
-                        if "." in candidate.rstrip("."):
-                            return candidate.rstrip(".")
-                except OSError:
-                    continue
-            log.warning("Could not obtain an FQDN for host %s", ip_address)
-            return ""
-        for candidate in [hostname] + aliases:
-            if "." in candidate.rstrip("."):
-                return candidate.rstrip(".")
-        return hostname.rstrip(".")
-    except OSError as e:
-        log.warning("Could not resolve host %s: %s", ip_address, e)
-        return ""
-
-
-def resolve_published_hostnames(uris):
-    """
-    Index forward-verified canonical hostnames by IP for the dump snapshot.
-
-    Explicitly published hostnames take precedence over arbitrary reverse-DNS
-    names for the same address. Ambiguous addresses are not overridden.
-
-    Args:
-        uris (iterable): Published URI strings.
-
-    Returns:
-        dict: IP addresses mapped to unambiguous canonical hostnames.
-    """
-    hosts = set()
-    for uri in uris:
-        try:
-            host = urlparse(uri).hostname
-        except ValueError:
-            continue
-        if host:
-            hosts.add(host)
-
-    candidates = {}
-    for host in sorted(hosts):
-        try:
-            parse_ip_address(host)
-        except ValueError:
-            pass
-        else:
-            continue
-        try:
-            addresses = socket.getaddrinfo(
-                host, None, family=socket.AF_UNSPEC,
-                type=socket.SOCK_STREAM, flags=socket.AI_CANONNAME,
-            )
-        except OSError as e:
-            log.warning("Could not forward-resolve published host %s: %s", host, e)
-            continue
-        canonical = host.rstrip(".")
-        for _, _, _, name, _ in addresses:
-            if name:
-                canonical = name.rstrip(".")
-                break
-        try:
-            parse_ip_address(canonical)
-        except ValueError:
-            if "." not in canonical:
-                continue
-        else:
-            continue
-        for _, _, _, _, sockaddr in addresses:
-            address = str(parse_ip_address(sockaddr[0]))
-            candidates.setdefault(address, set()).add(canonical.lower())
-
-    result = {}
-    for address, names in candidates.items():
-        if len(names) == 1:
-            result[address] = next(iter(names))
-        else:
-            log.warning("Multiple published hostnames for %s: %s; retaining DNS result",
-                        address, ", ".join(sorted(names)))
-    return result
-
-
-def map_uri_to_resolved_uri(uri: str, published_hostnames=None, display_hostname="") -> str:
-    """
-    Resolve the hostname and replace it in the URI.
-
-    Preserve the scheme, port, path, query and fragment. User information in
-    the authority is not supported and is dropped on successful resolution.
-
-    Args:
-        uri (str): The URI string to be resolved.
-        published_hostnames (dict): Optional forward-verified IP-to-name mapping.
-        display_hostname (str): Publisher-supplied physical hostname, preferred
-            over IP-based resolution. Use it unchanged if DNS fails.
-
-    Returns:
-        str: The resolved URI with the hostname replaced, or the original URI if resolution fails.
-    """
-    # Parse the URI and extract the hostname and port.
-    try:
-        parsed = urlparse(uri)
-        if not parsed.hostname:
-            log.warning(f"Could not resolve URI {uri}: no hostname found")
-            return uri
-        port = parsed.port
-    except ValueError as e:
-        log.warning(f"Could not resolve URI {uri}: {e}")
-        return uri
-
-    # Get the resolved hostname for the URI.
-    hostname = ""
-    if display_hostname:
-        hostname = map_uri_to_hostname(f"//{display_hostname}") or display_hostname.rstrip(".")
-    elif published_hostnames:
-        try:
-            address = str(parse_ip_address(parsed.hostname))
-        except ValueError:
-            pass
-        else:
-            hostname = published_hostnames.get(address, "")
-    if not hostname:
-        hostname = map_uri_to_hostname(uri)
-    if not hostname:
-        return uri
-
-    # Construct the netloc with the resolved hostname and the original port if present.
-    netloc = hostname
-    if port is not None:
-        netloc += f":{port}"
-
-    # Replace the netloc in the parsed URI with the constructed netloc.
-    return parsed._replace(netloc=netloc).geturl()
-
-
-def invalid_request(message: str):
-    """
-    Log an invalid request and raise an HTTP 400 error.
-
-    Args:
-        message (str): The reason the request is invalid.
-    """
-    log.warning("Invalid request to %s: %s", request.path, message)
-    abort(400, description=message)
-
-
-def read_request_json():
-    """
-    Parse the request body and require a JSON object.
-
-    Returns:
-        dict: The parsed JSON object.
-    """
-    try:
-        js = json.loads(request.data)
-    except (ValueError, UnicodeDecodeError) as e:
-        invalid_request(f"Invalid JSON: {e}")
-    if not isinstance(js, dict):
-        invalid_request("Expected a JSON object")
-    return js
-
-
 
 if "ENTRY_TTL" in os.environ:
     ttl = int(os.environ["ENTRY_TTL"])
 else:
     ttl = 10
-entry_ttl = timedelta(seconds=ttl)
 
+entry_ttl = timedelta(seconds=ttl)
 last_stats = datetime.now()
 npublishes = 0
 nlookups = 0
@@ -358,12 +44,28 @@ maxpartitions = 0
 maxentries = {}
 
 app = Flask(__name__)
-global appstarted
 appstarted = False
 
 
 with app.app_context():
     appstarted = True
+
+
+def invalid_request(message: str):
+    """Log an invalid Flask request and reject it with HTTP 400."""
+    log.warning("Invalid request to %s: %s", request.path, message)
+    abort(400, description=message)
+
+
+def read_request_json():
+    """Parse the current Flask request and require a JSON object."""
+    try:
+        js = json.loads(request.data)
+    except (ValueError, UnicodeDecodeError) as error:
+        invalid_request(f"Invalid JSON: {error}")
+    if not isinstance(js, dict):
+        invalid_request("Expected a JSON object")
+    return js
 
 
 @app.route("/live", methods=["GET"])
@@ -414,10 +116,6 @@ def dump():
     with partlock:
         partition_copy = {p: store.copy() for p, store in partitions.items()}
 
-    published_hostnames = resolve_published_hostnames(
-        entry.uri for store in partition_copy.values() for entry in store.values()
-    )
-
     # If there are partitions, generate the HTML table for them.
     if partition_copy:
         pad = ' style="padding-left: 1em;padding-right: 1em"'
@@ -435,7 +133,7 @@ def dump():
 
         # Set the table for active partitions.
         dstream.write("</table>")
-        dstream.write(f"<h2>Partitions</h2>")
+        dstream.write("<h2>Partitions</h2>")
         for p in partition_copy:
             store = partition_copy[p]
             dstream.write(f"<h3>{escape(p)}</h3>")
@@ -454,20 +152,15 @@ def dump():
                 f"<th{pad}>time</th>"
                 f"</tr>"
             )
-            # Highlight expired entries in red.
-            format_cell = lambda value, strike: (
-                f'<span style="color: red;">{escape(str(value))}</span>' if strike else escape(str(value))
-            )
-
             # Iterate over each entry in the partition and generate its HTML row.
             for k, v in store.items():
                 expired = now - v.time >= entry_ttl
-                resolved_hostname = map_uri_to_resolved_uri(v.uri, published_hostnames, v.hostname)
+                resolved_hostname = map_uri_to_resolved_uri(v.uri)
 
                 dstream.write(
                     f"<tr><td{pad}>{format_cell(k, expired)}</td>"
                     f"<td{pad}>{format_cell(v.uri, expired)}</td>"
-                    f"<td{pad}>{format_cell(resolved_hostname, expired)}</td>" # Render resolved uri row
+                    f"<td{pad}>{format_cell(resolved_hostname, expired)}</td>"
                     f"<td{pad}>{format_cell(v.data_type, expired)}</td>"
                     f"<td{pad}>{format_cell(v.capacity, expired)}</td>"
                     f"<td{pad}>{format_cell(v.connection_type, expired)}</td>"
@@ -483,57 +176,21 @@ def dump():
     # Add a horizontal rule and server statistics section.
     dstream.write("<hr><h2>Server statistics</h2>")
     # Render the server statistics into the HTML stream.
-    stats_to_html(dstream)
+    with partlock:
+        stats_to_html(
+            dstream,
+            last_stats,
+            npublishes,
+            publish_time,
+            nlookups,
+            lookup_time,
+            maxpartitions,
+            maxentries,
+        )
 
     # Return the generated HTML content.
     dstream.seek(0)
     return dstream.read()
-
-
-def stats_to_html(dstream) -> None:
-    """
-    Render the server statistics into the provided HTML stream.
-
-    This includes information about publish and lookup calls, their timings,
-    and the maximum number of partitions and entries observed.
-
-    Args:
-        dstream (StringIO): The HTML stream to write the statistics to.
-
-    Returns:
-        None: This function writes the statistics to the provided HTML stream.
-
-    """
-    with partlock:
-        # Write the timestamp of the last statistics reset.
-        dstream.write(f"<p>Since {last_stats}</p>")
-
-        # Report the average publish time per call.
-        if npublishes > 0:
-            avg_pub = publish_time / npublishes
-        else:
-            avg_pub = timedelta()
-        dstream.write(
-            f"<p>{npublishes} calls to publish in total time {publish_time} "
-            f"(average {avg_pub.total_seconds() * 1000000:g} &micro;s per call)</p>"
-        )
-
-        # Report the average lookup time per call.
-        if nlookups > 0:
-            avg_lookup = lookup_time / nlookups
-        else:
-            avg_lookup = timedelta()
-        dstream.write(
-            f"<p>{nlookups} calls to lookup in total time {lookup_time} "
-            f"(average {avg_lookup.total_seconds() * 1000000:g} &micro;s per call)</p>"
-        )
-
-        # Display the maximum number of partitions and entries observed.
-        dstream.write(f"<p>Maximum number of partitions active = {maxpartitions}</p>")
-        for part in maxentries:
-            dstream.write(
-                f"<p>Maximum entries in partition {escape(part)} = {maxentries[part]}</p>"
-            )
 
 
 @app.route("/stats")
@@ -550,7 +207,17 @@ def dumpStats():
 
     # Write the statistics section.
     dstream.write("<h1>Connection server statistics</h1>")
-    stats_to_html(dstream)
+    with partlock:
+        stats_to_html(
+            dstream,
+            last_stats,
+            npublishes,
+            publish_time,
+            nlookups,
+            lookup_time,
+            maxpartitions,
+            maxentries,
+        )
 
     # Return the HTML content as a string.
     dstream.seek(0)
@@ -568,14 +235,8 @@ def resetStats():
         str: The HTML content representing the previous server statistics.
 
     """
-    global \
-        last_stats, \
-        npublishes, \
-        nlookups, \
-        lookup_time, \
-        publish_time, \
-        maxpartitions, \
-        maxentries
+    global last_stats, npublishes, nlookups, lookup_time, publish_time
+    global maxpartitions, maxentries
 
     with partlock:
         stats = dumpStats()
@@ -623,7 +284,7 @@ def publish():
                 "connection_type": 0,
                 "data_type": "<data_type>",
                 "capacity": 0,
-                "hostname": "<optional physical hostname for display>"
+                "hostname": "<optional hostname metadata>"
             },
             ...
         ]
@@ -632,6 +293,7 @@ def publish():
     Returns:
         str: "OK" if the connections were successfully published.
     """
+    global maxpartitions, npublishes, publish_time
     # Record the start time for measuring the duration of the publish operation.
     time_start = time.monotonic()
     js = read_request_json()
@@ -646,7 +308,10 @@ def publish():
     for connection in js["connections"]:
         if not isinstance(connection, dict):
             invalid_request("Each connection must be an object")
-        if any(not isinstance(connection.get(key), str) for key in ("uid", "uri", "data_type")):
+        if any(
+            not isinstance(connection.get(key), str)
+            for key in ("uid", "uri", "data_type")
+        ):
             invalid_request("Each connection requires string uid, uri and data_type")
         if type(connection.get("connection_type")) is not int:
             invalid_request("connection_type must be an integer")
@@ -659,8 +324,13 @@ def publish():
                 or not hostname
                 or len(hostname) > 253
                 or any(
-                    re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) is None
-                    for label in (hostname[:-1] if hostname.endswith(".") else hostname).split(".")
+                    re.fullmatch(
+                        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label
+                    )
+                    is None
+                    for label in (
+                        hostname[:-1] if hostname.endswith(".") else hostname
+                    ).split(".")
                 )
             ):
                 invalid_request("hostname must be a non-empty DNS hostname, not a URI")
@@ -676,14 +346,10 @@ def publish():
     # Resolve connection details outside the lock because DNS resolution can be slow.
     connection_details = []
     for connection in js["connections"]:
-        _port = None
-        _hostname = ""
-        if "uid" in connection and "uri" in connection:
-            _uri = connection["uri"]
-            _port = map_uri_to_port(_uri)
-            display_host = connection.get("hostname", "")
-            _hostname = map_uri_to_hostname(f"//{display_host}" if display_host else _uri) or display_host
-        connection_details.append((connection, _port, _hostname))
+        uri = connection["uri"]
+        connection_details.append(
+            (connection, map_uri_to_port(uri), map_uri_to_hostname(uri))
+        )
 
     with partlock:
         # Initialize or retrieve the store for the current partition.
@@ -695,44 +361,33 @@ def publish():
             partitions[part] = store
 
         # Update global statistics for partitions and entries.
-        global maxpartitions
         if len(partitions) > maxpartitions:
             maxpartitions = len(partitions)
         if part not in maxentries:
             maxentries[part] = 0
 
         # Keep track of the applications already registered in this partition.
-        registered_partition_applications = list(store.keys())
+        registered_partition_applications = set(store)
 
-        # Define a named tuple to store connection details in a structured manner.
-        Connection = namedtuple(
-            "Connection", ["uri", "data_type", "capacity", "connection_type", "time", "hostname"]
-        )
-
-        # Iterate over each connection and update the store accordingly.
-        for connection, _port, _hostname in connection_details:
-            if "uid" in connection and "uri" in connection:
-                uid = connection["uid"]
-                now = datetime.now()
-
-                # Log whether we are updating an existing application or registering a new one.
-                if uid in registered_partition_applications:
-                    log.debug(f"Updating address of existing application {uid} with uri {connection['uri']}")
-                else:
-                    _uri = connection["uri"]
-                    log.info(f"Registering new application {uid} with uri {_uri} ({_hostname}:{_port})")
-
-                # Store the connection details in the partition's store.
-                store[uid] = Connection(
-                    uri=connection["uri"],
-                    connection_type=connection["connection_type"],
-                    data_type=connection["data_type"],
-                    capacity=(
-                        connection["capacity"] if "capacity" in connection else 0
-                    ),
-                    time=timestamp,
-                    hostname=connection.get("hostname", ""),
+        for connection, port, hostname in connection_details:
+            uid = connection["uid"]
+            if uid in registered_partition_applications:
+                log.debug(
+                    f"Updating address of existing application {uid} with uri {connection['uri']}"
                 )
+            else:
+                log.info(
+                    f"Registering new application {uid} with uri {connection['uri']} ({hostname}:{port})"
+                )
+
+            store[uid] = Connection(
+                uri=connection["uri"],
+                connection_type=connection["connection_type"],
+                data_type=connection["data_type"],
+                capacity=connection.get("capacity", 0),
+                time=timestamp,
+                hostname=connection.get("hostname", ""),
+            )
 
         # Log the completion of processing all connections for this partition.
         elapsed = timedelta(seconds=time.monotonic() - time_start)
@@ -741,7 +396,6 @@ def publish():
         )
 
         # Update global publish statistics.
-        global npublishes, publish_time
         publish_time += elapsed
         npublishes += 1
         if len(store) > maxentries[part]:
@@ -796,7 +450,9 @@ def retract():
     if not isinstance(js.get("connections"), list):
         invalid_request("connections must be a list")
     for connection in js["connections"]:
-        if not isinstance(connection, dict) or not isinstance(connection.get("connection_id"), str):
+        if not isinstance(connection, dict) or not isinstance(
+            connection.get("connection_id"), str
+        ):
             invalid_request("Each retraction requires a string connection_id")
 
     # Initialize a flag to track that specified connections were successfully retracted.
@@ -805,7 +461,9 @@ def retract():
     with partlock:
         # Check if the partition exists before attempting to retract connections.
         if part not in partitions:
-            log.warning("Cannot retract connections: partition %r not found", part)
+            log.warning(
+                "Cannot retract connections: partition %r not found", part
+            )
             return make_response(f"Partition {escape(part)} not found", 404)
 
         # Attempt to retract each specified connection from the partition.
@@ -818,7 +476,8 @@ def retract():
                 log.warning(
                     "Connection %r not found in partition %r; existing requested "
                     "connections are still retracted, but the response will be HTTP 404",
-                    id, part,
+                    id,
+                    part,
                 )
                 good = False
         if len(store) == 0:
@@ -845,6 +504,7 @@ def get_connection(part):
         flask.Response: A JSON array of matching connections, including UID,
             URI, connection type, data type and capacity. May be empty.
     """
+    global nlookups, lookup_time
     now = datetime.now()
     js = read_request_json()
     log.debug(f"{js=}")
@@ -861,7 +521,7 @@ def get_connection(part):
             regex = re.compile(js["uid_regex"])
         except re.error as e:
             invalid_request(f"Invalid uid_regex: {e}")
-        
+
         # Extract the data type from the request JSON.
         dt = js["data_type"]
         matched = []
@@ -880,23 +540,24 @@ def get_connection(part):
             else:
                 log.debug(f"Partition {part} not found")
                 abort(404)
-                
+
         # Construct the result list from the matched connections.
         for uid, con in matched:
-            result.append({
-                "uid": uid,
-                "uri": con.uri,
-                "connection_type": con.connection_type,
-                "data_type": con.data_type,
-                "capacity": con.capacity,
-            })
+            result.append(
+                {
+                    "uid": uid,
+                    "uri": con.uri,
+                    "connection_type": con.connection_type,
+                    "data_type": con.data_type,
+                    "capacity": con.capacity,
+                }
+            )
 
         # Log the time required to perform the lookup.
         td = datetime.now() - now
         log.debug(
             f"Lookup took {td.microseconds} us to find {len(result)} connections"
         )
-        global nlookups, lookup_time
         with partlock:
             nlookups += 1
             lookup_time += td
