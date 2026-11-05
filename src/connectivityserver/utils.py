@@ -9,10 +9,11 @@ import re
 import socket
 import time
 from collections import OrderedDict, namedtuple
-from datetime import timedelta
+from datetime import datetime, timedelta
 from html import escape
 from ipaddress import ip_address as parse_ip_address
 from threading import RLock
+from typing import TextIO
 from urllib.parse import urlparse
 
 from daqpytools.logging import get_daq_logger
@@ -148,7 +149,7 @@ def resolve_uri_hostname(uri: str) -> str:
     try:
         address = str(parse_ip_address(ip_address))
     except ValueError:
-        # Catch pod IP addresses that are not valid IPs
+        # Non-IP hosts use DNS; cluster names also require control-plane lookup.
         if not re.search(r"\.(?:svc|pod)\.", ip_address, re.IGNORECASE):
             return resolve_hostname(ip_address)
         try:
@@ -178,7 +179,7 @@ def resolve_uri_hostname(uri: str) -> str:
     return hostname
 
 
-def resolve_pod_hostname(pod_ip: str) -> tuple[bool, str]:
+def resolve_pod_hostname(pod_ip: str) -> tuple[bool | None, str]:
     """
     Return (is_pod, hostname) from pod scheduling and the node's Hostname address.
 
@@ -186,13 +187,10 @@ def resolve_pod_hostname(pod_ip: str) -> tuple[bool, str]:
         pod_ip (str): The IP address of the pod to resolve.
 
     Returns:
-        tuple[bool, str]: A tuple where the first element indicates if the IP belongs to
-            a pod, and the second element is the resolved hostname or an empty string if
-            resolution fails.
-
-    Raises:
-        None: If the pod IP does not correspond to a pod or the resolution fails, the
-            function returns (None, "") in such cases.
+        tuple[bool | None, str]: 
+            - (True, hostname) for a resolved pod,
+            - (False, "") if no pod matches, 
+            - (None, "") if discovery fails, including missing or ambiguous information.
     """
     try:
         # Parse the pod IP address and prepare the Kubernetes client configuration.
@@ -238,7 +236,7 @@ def resolve_pod_hostname(pod_ip: str) -> tuple[bool, str]:
         if not hostname or re.fullmatch(r"[A-Za-z0-9.-]+", hostname) is None:
             raise ValueError("invalid node hostname")
 
-        # Attempt to resolve the hostname to an IP address to ensure it is reachable.
+        # Prefer a DNS-qualified name, retaining the reported hostname on failure.
         return True, resolve_hostname(hostname) or hostname
     except client.ApiException as error:
         log.warning(
@@ -250,7 +248,7 @@ def resolve_pod_hostname(pod_ip: str) -> tuple[bool, str]:
     except (OSError, HTTPError, ConfigException, ValueError) as error:
         log.warning("Could not identify physical pod host for %s: %s", pod_ip, error)
 
-    # If any exception occurs or the pod cannot be resolved, return (None, "")
+    # Expected discovery failures are logged above.
     return None, ""
 
 
@@ -264,8 +262,6 @@ def resolve_hostname(ip_address: str) -> str:
     Returns:
         str: The resolved hostname or an empty string if resolution fails.
 
-    Raises:
-        None - the function returns an empty string if resolution fails.
     """
 
     # Parse the IP address from the hostname. If parsing fails, set address to None.
@@ -355,19 +351,18 @@ def map_uri_to_resolved_uri(uri: str) -> str:
     return parsed._replace(netloc=netloc).geturl()
 
 
-def format_cell(value: str, expired: bool) -> str:
+def format_cell(value: str | int | datetime, expired: bool) -> str:
     """
     Format a table cell with optional expiration styling.
 
     Args:
-        value (str): The cell value to be displayed.
+        value (str | int | datetime): Text, an integer or a datetime timestamp
+            to convert to text and HTML-escape.
         expired (bool): Whether the cell is expired.
 
     Returns:
         str: The HTML-formatted cell content.
 
-    Raises:
-        None
     """
     text = escape(str(value))
     return f'<span style="color: red;">{text}</span>' if expired else text
@@ -375,7 +370,7 @@ def format_cell(value: str, expired: bool) -> str:
 
 def stats_to_html(
     dstream: TextIO,
-    last_stats: str,
+    last_stats: datetime,
     npublishes: int,
     publish_time: timedelta,
     nlookups: int,
@@ -388,7 +383,7 @@ def stats_to_html(
 
     Args:
         dstream (TextIO): The output stream to write the HTML content to.
-        last_stats (str): The timestamp of the last statistics reset.
+        last_stats (datetime): The timestamp of the last statistics reset.
         npublishes (int): The number of publish calls made.
         publish_time (timedelta): The total time spent on publish calls.
         nlookups (int): The number of lookup calls made.
@@ -399,8 +394,6 @@ def stats_to_html(
     Returns:
         None
 
-    Raises:
-        None
     """
     # Write the timestamp of the last statistics reset.
     dstream.write(f"<p>Since {last_stats}</p>")
