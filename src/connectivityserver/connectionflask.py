@@ -585,8 +585,8 @@ def get_connection(part):
     # Validate the request JSON for required fields.
     if isinstance(js.get("uid_regex"), str) and isinstance(js.get("data_type"), str):
         log.debug(
-            f"Searching for connections matching uid_regex<{js['uid_regex']}> and "f
-            "data_type {js['data_type']}"
+            f"Searching for connections matching uid_regex<{js['uid_regex']}> and "
+            f"data_type {js['data_type']}"
         )
 
         # Initialize the result list to store matching connections.
