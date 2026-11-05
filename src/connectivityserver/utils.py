@@ -106,6 +106,7 @@ def map_uri_to_hostname(uri: str) -> str:
     Returns:
         str: The resolved hostname or an empty string if resolution fails.
     """
+    # Query the hostname cache first to see if the URI has been resolved recently.
     with hostname_cache_lock:
         entry = hostname_cache.get(uri)
         if entry is not None:
@@ -115,6 +116,7 @@ def map_uri_to_hostname(uri: str) -> str:
                 return hostname
             del hostname_cache[uri]
 
+    # Add the resolved hostname to the cache with an expiration time of 1 hour.
     hostname = resolve_uri_hostname(uri)
     with hostname_cache_lock:
         hostname_cache[uri] = (hostname, time.monotonic() + 3600)
@@ -128,8 +130,6 @@ def resolve_uri_hostname(uri: str) -> str:
     """
     Resolve pod endpoints through the control plane and other hosts through DNS.
 
-    A missing or malformed hostname uses the local outbound IP instead.
-
     Args:
         uri (str): The URI string to be resolved.
 
@@ -142,17 +142,18 @@ def resolve_uri_hostname(uri: str) -> str:
             raise ValueError(f"Invalid URI format: {uri}. No hostname found.")
 
     except ValueError:
-        log.debug(f"Could not parse {uri}, using the local outbound IP")
-        return resolve_local_hostname()
+        log.debug(f"Could not parse {uri}")
+        return ""
 
     try:
         address = str(parse_ip_address(ip_address))
     except ValueError:
+        # Catch pod IP addresses that are not valid IPs
         if not re.search(r"\.(?:svc|pod)\.", ip_address, re.IGNORECASE):
             return resolve_hostname(ip_address)
         try:
             addresses = {
-                entry[4][0]
+                entry[4][0] # Get the canonical IP address from the socket info tuple
                 for entry in socket.getaddrinfo(
                     ip_address,
                     None,
@@ -163,7 +164,7 @@ def resolve_uri_hostname(uri: str) -> str:
             log.warning("Could not resolve pod endpoint %s: %s", ip_address, error)
             return ""
         if len(addresses) != 1:
-            log.warning("Pod endpoint %s does not identify one IP", ip_address)
+            log.warning("Pod endpoint %s is not unique", ip_address)
             return ""
         return resolve_pod_hostname(addresses.pop())[1]
 
@@ -177,24 +178,39 @@ def resolve_uri_hostname(uri: str) -> str:
     return hostname
 
 
-def resolve_pod_hostname(pod_ip: str):
+def resolve_pod_hostname(pod_ip: str) -> tuple[bool, str]:
     """
     Return (is_pod, hostname) from pod scheduling and the node's Hostname address.
 
-    Read kubeconfig without persisting changes, not DRUNC_HOST_NAME or local discovery.
-    None for is_pod means discovery failed; False means no matching pod exists.
-    A matched pod without one node hostname returns (True, "").
+    Args:
+        pod_ip (str): The IP address of the pod to resolve.
+
+    Returns:
+        tuple[bool, str]: A tuple where the first element indicates if the IP belongs to
+            a pod, and the second element is the resolved hostname or an empty string if
+            resolution fails.
+
+    Raises:
+        None: If the pod IP does not correspond to a pod or the resolution fails, the
+            function returns (None, "") in such cases.
     """
     try:
+        # Parse the pod IP address and prepare the Kubernetes client configuration.
         address = str(parse_ip_address(pod_ip))
+
+        # Load the Kubernetes client configuration and set up the API client.
         configuration = client.Configuration()
         config.load_kube_config(
             client_configuration=configuration, persist_config=False
         )
         api_host = urlparse(configuration.host).hostname
+
+        # Update the no_proxy configuration to include the API host.
         configuration.no_proxy = ",".join(
             filter(None, [configuration.no_proxy, api_host])
         )
+
+        # Use the API client to query the Kubernetes API for pods matching the given IP.
         with client.ApiClient(configuration) as api_client:
             api = client.CoreV1Api(api_client)
             pods = api.list_pod_for_all_namespaces(
@@ -205,18 +221,24 @@ def resolve_pod_hostname(pod_ip: str):
                 return False, ""
             nodes = {pod.spec.node_name for pod in pods}
             if None in nodes or "" in nodes or len(nodes) != 1:
-                raise ValueError("pod IP does not identify one scheduled node")
+                raise ValueError("Pod IP does not uniquely identify the scheduled node")
             node = api.read_node(nodes.pop(), _request_timeout=(3, 3))
             names = {
                 entry.address
                 for entry in (node.status.addresses or [])
                 if entry.type == "Hostname"
             }
+
+        # Ensure the node reports unique Hostname and validate it.
         if len(names) != 1:
             raise ValueError("node does not report exactly one Hostname")
+
+        # Check that the hostname is valid and conforms to the expected pattern.
         hostname = names.pop()
         if not hostname or re.fullmatch(r"[A-Za-z0-9.-]+", hostname) is None:
             raise ValueError("invalid node hostname")
+
+        # Attempt to resolve the hostname to an IP address to ensure it is reachable.
         return True, resolve_hostname(hostname) or hostname
     except client.ApiException as error:
         log.warning(
@@ -227,26 +249,9 @@ def resolve_pod_hostname(pod_ip: str):
         )
     except (OSError, HTTPError, ConfigException, ValueError) as error:
         log.warning("Could not identify physical pod host for %s: %s", pod_ip, error)
+
+    # If any exception occurs or the pod cannot be resolved, return (None, "")
     return None, ""
-
-
-def resolve_local_hostname() -> str:
-    """
-    Resolve this server's outbound IP using the system resolver.
-
-    Returns:
-        str: The local hostname, or an empty string if no suitable name is found.
-    """
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.settimeout(0.1)
-            s.connect(("10.255.255.255", 1))
-            ip_address = s.getsockname()[0]
-    except OSError as e:
-        log.warning("Could not determine the local outbound IP: %s", e)
-        return ""
-
-    return resolve_hostname(ip_address)
 
 
 def resolve_hostname(ip_address: str) -> str:
@@ -258,7 +263,11 @@ def resolve_hostname(ip_address: str) -> str:
 
     Returns:
         str: The resolved hostname or an empty string if resolution fails.
+
+    Raises:
+        None - the function returns an empty string if resolution fails.
     """
+
     # Parse the IP address from the hostname. If parsing fails, set address to None.
     try:
         address = parse_ip_address(ip_address)
@@ -267,6 +276,7 @@ def resolve_hostname(ip_address: str) -> str:
 
     # Attempt to resolve the hostname to a fully qualified domain name.
     try:
+        # If an IP address was successfully parsed, attempt a reverse lookup first.
         if address is not None:
             hostname, aliases, _ = socket.gethostbyaddr(str(address))
         else:
@@ -277,9 +287,13 @@ def resolve_hostname(ip_address: str) -> str:
                 type=socket.SOCK_STREAM,  # Use stream sockets (TCP)
                 flags=socket.AI_CANONNAME,  # Request the canonical name of the host
             )
+
+            # Iterate through the resolved addresses to find a FQDN.
             for _, _, _, canonical, _ in addresses:
                 if "." in canonical.rstrip("."):
                     return canonical.rstrip(".")
+
+            # If no FQDN was found, attempt reverse lookup on each resolved address.
             for _, _, _, _, sockaddr in addresses:
                 try:
                     hostname, aliases, _ = socket.gethostbyaddr(sockaddr[0])
@@ -290,9 +304,14 @@ def resolve_hostname(ip_address: str) -> str:
                     continue
             log.warning("Could not obtain an FQDN for host %s", ip_address)
             return ""
+
+        # If an IP address was successfully parsed and reverse lookup succeeded, check
+        # the returned hostname and aliases for a FQDN.
         for candidate in [hostname] + aliases:
             if "." in candidate.rstrip("."):
                 return candidate.rstrip(".")
+
+        # If no FQDN was found in the hostname and aliases, return the hostname as-is.
         return hostname.rstrip(".")
     except OSError as e:
         log.warning("Could not resolve host %s: %s", ip_address, e)
@@ -336,28 +355,52 @@ def map_uri_to_resolved_uri(uri: str) -> str:
     return parsed._replace(netloc=netloc).geturl()
 
 
-def format_cell(value, expired):
+def format_cell(value: str, expired: bool) -> str:
+    """
+    Format a table cell with optional expiration styling.
+
+    Args:
+        value (str): The cell value to be displayed.
+        expired (bool): Whether the cell is expired.
+
+    Returns:
+        str: The HTML-formatted cell content.
+
+    Raises:
+        None
+    """
     text = escape(str(value))
     return f'<span style="color: red;">{text}</span>' if expired else text
 
 
 def stats_to_html(
-    dstream,
-    last_stats,
-    npublishes,
-    publish_time,
-    nlookups,
-    lookup_time,
-    maxpartitions,
-    maxentries,
+    dstream: TextIO,
+    last_stats: str,
+    npublishes: int,
+    publish_time: timedelta,
+    nlookups: int,
+    lookup_time: timedelta,
+    maxpartitions: int,
+    maxentries: dict[str, int],
 ) -> None:
     """
     Render the server statistics into the provided HTML stream.
 
-    This includes information about publish and lookup calls, their timings,
-    and the maximum number of partitions and entries observed.
+    Args:
+        dstream (TextIO): The output stream to write the HTML content to.
+        last_stats (str): The timestamp of the last statistics reset.
+        npublishes (int): The number of publish calls made.
+        publish_time (timedelta): The total time spent on publish calls.
+        nlookups (int): The number of lookup calls made.
+        lookup_time (timedelta): The total time spent on lookup calls.
+        maxpartitions (int): The maximum number of partitions observed.
+        maxentries (dict[str, int]): The maximum number of entries per partition.
 
-    The caller supplies the app's statistics while holding its state lock.
+    Returns:
+        None
+
+    Raises:
+        None
     """
     # Write the timestamp of the last statistics reset.
     dstream.write(f"<p>Since {last_stats}</p>")

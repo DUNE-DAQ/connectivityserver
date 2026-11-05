@@ -51,14 +51,38 @@ with app.app_context():
     appstarted = True
 
 
-def invalid_request(message: str):
-    """Log an invalid Flask request and reject it with HTTP 400."""
+def invalid_request(message: str) -> None:
+    """
+    Log an invalid Flask request and reject it with HTTP 400.
+
+    Args:
+        message (str): The error message describing the invalid request.
+
+    Returns:
+        None
+
+    Raises:
+        werkzeug.exceptions.HTTPException: Always raises an HTTP 400 error with the 
+            provided message.
+    """
     log.warning("Invalid request to %s: %s", request.path, message)
     abort(400, description=message)
 
 
-def read_request_json():
-    """Parse the current Flask request and require a JSON object."""
+def read_request_json() -> dict:
+    """
+    Parse the current Flask request and require a JSON object.
+
+    Args:
+        None
+
+    Returns:
+        dict: The parsed JSON object from the request.
+
+    Raises:
+        werkzeug.exceptions.HTTPException: If the request does not contain valid JSON or
+            is not a JSON object.
+    """
     try:
         js = json.loads(request.data)
     except (ValueError, UnicodeDecodeError) as error:
@@ -93,16 +117,21 @@ def ready():
 
 
 @app.route("/")
-def dump():
+def dump() -> str:
     """
     Dump the current configuration and active partitions of the server.
 
     Render a locked snapshot of stored partitions, including expired entries
-    highlighted in red. Hostname resolution runs outside the partition lock.
-    Statistics are read separately and may represent a later state.
+    highlighted in red.
+
+    Args:
+        None
 
     Returns:
         str: HTML string representing the server's configuration and active partitions.
+
+    Raises:
+        None
     """
     # Get the current time to check for expired entries.
     now = datetime.now()
@@ -127,8 +156,9 @@ def dump():
 
         # Generate the HTML rows for each partition with its entry count.
         for p in partition_copy:
+            length = len(partition_copy[p])
             dstream.write(
-                f"<tr><td{pad}>{escape(p)}</td><td{pad}>{len(partition_copy[p])}</td></tr>"
+                f"<tr><td{pad}>{escape(p)}</td><td{pad}>{length}</td></tr>"
             )
 
         # Set the table for active partitions.
@@ -175,6 +205,7 @@ def dump():
 
     # Add a horizontal rule and server statistics section.
     dstream.write("<hr><h2>Server statistics</h2>")
+
     # Render the server statistics into the HTML stream.
     with partlock:
         stats_to_html(
@@ -194,13 +225,19 @@ def dump():
 
 
 @app.route("/stats")
-def dumpStats():
+def dumpStats() -> str:
     """
     Dump the current server statistics as an HTML string.
+
+    Args:
+        None
 
     Returns:
         str: The HTML content representing the server statistics.
 
+    Raises:
+        werkzeug.exceptions.HTTPException: If the request does not contain valid JSON or
+            is not a JSON object.
     """
     # Create a StringIO stream to hold the HTML content.
     dstream = StringIO()
@@ -225,14 +262,21 @@ def dumpStats():
 
 
 @app.route("/resetStats")
-def resetStats():
+def resetStats() -> str:
     """
     Reset the server statistics and return the previous statistics as an HTML string.
 
     Published connections and the hostname cache are preserved.
 
+    Args:
+        None
+
     Returns:
         str: The HTML content representing the previous server statistics.
+
+    Raises:
+        werkzeug.exceptions.HTTPException: If the request does not contain valid JSON or
+            is not a JSON object.
 
     """
     global last_stats, npublishes, nlookups, lookup_time, publish_time
@@ -252,16 +296,22 @@ def resetStats():
 
 
 @app.route("/resetService")
-def reset():
+def reset() -> str:
     """
     Reset the service by clearing all partitions and resetting the server statistics.
 
     Connections and statistics are cleared atomically. The hostname cache is
     preserved.
 
+    Args:
+        None
+
     Returns:
         str: The HTML content representing the previous server statistics.
 
+    Raises:
+        werkzeug.exceptions.HTTPException: If the request does not contain valid JSON or
+            is not a JSON object.
     """
     global partitions
     with partlock:
@@ -270,7 +320,7 @@ def reset():
 
 
 @app.route("/publish", methods=["POST"])
-def publish():
+def publish() -> str:
     """
     Register connection information for a given partition.
 
@@ -290,10 +340,20 @@ def publish():
         ]
     }
 
+    Args:
+        None
+
     Returns:
         str: "OK" if the connections were successfully published.
+
+    Raises:
+        werkzeug.exceptions.HTTPException: If the request does not contain valid JSON or
+            is not a JSON object.
     """
+
+    # Retrieve the global variables
     global maxpartitions, npublishes, publish_time
+
     # Record the start time for measuring the duration of the publish operation.
     time_start = time.monotonic()
     js = read_request_json()
@@ -340,7 +400,8 @@ def publish():
     part = js["partition"]
 
     log.debug(
-        f"{len(js['connections'])} connections in partition {part} from {request.remote_addr} uri={js['connections'][0]['uri']}..."
+        f"{len(js['connections'])} connections in partition {part} from "
+        f"{request.remote_addr} uri={js['connections'][0]['uri']}..."
     )
 
     # Resolve connection details outside the lock because DNS resolution can be slow.
@@ -373,26 +434,28 @@ def publish():
             uid = connection["uid"]
             if uid in registered_partition_applications:
                 log.debug(
-                    f"Updating address of existing application {uid} with uri {connection['uri']}"
+                    f"Updating app {uid} address with uri {connection['uri']}"
                 )
             else:
                 log.info(
-                    f"Registering new application {uid} with uri {connection['uri']} ({hostname}:{port})"
+                    f"Registering app {uid} with uri {connection['uri']} "
+                    f"({hostname}:{port})"
                 )
 
-            store[uid] = Connection(
-                uri=connection["uri"],
-                connection_type=connection["connection_type"],
-                data_type=connection["data_type"],
-                capacity=connection.get("capacity", 0),
-                time=timestamp,
-                hostname=connection.get("hostname", ""),
-            )
+                store[uid] = Connection(
+                    uri=connection["uri"],
+                    connection_type=connection["connection_type"],
+                    data_type=connection["data_type"],
+                    capacity=connection.get("capacity", 0),
+                    time=timestamp,
+                    hostname=connection.get("hostname", ""),
+                )
 
         # Log the completion of processing all connections for this partition.
         elapsed = timedelta(seconds=time.monotonic() - time_start)
         log.debug(
-            f"Took {elapsed.total_seconds() * 1000000:g} us to add {len(js['connections'])} connections"
+            f"Took {elapsed.total_seconds() * 1000000:g} us to add "
+            f"{len(js['connections'])} connections"
         )
 
         # Update global publish statistics.
@@ -412,8 +475,14 @@ def retract_partition():
     Returns "OK" if the partition was successfully retracted, otherwise returns a 404
     error if the partition was not found.
 
+    Args:
+        None
+
     Returns:
         str: "OK" if the partition was successfully retracted.
+
+    Raises:
+        werkzeug.exceptions.NotFound: If the partition to retract is not found.
     """
     js = read_request_json()
     log.debug(f"request=[{js}]")
@@ -436,12 +505,16 @@ def retract():
 
     Returns "OK" if all specified connections were successfully retracted, otherwise
     returns a 404 error if any connection was not found.
-    Existing connections are still removed when other requested IDs are missing;
-    this partial-success outcome is logged as a warning.
+    
+    Args:
+        None
 
     Returns:
         str or flask.Response: "OK" on success, or an HTTP 404 response if the
             partition does not exist. An empty retraction list is accepted.
+
+    Raises:
+        werkzeug.exceptions.NotFound: If any specified connection is not found.
     """
     # Read and validate the request JSON.
     js = read_request_json()
@@ -512,7 +585,8 @@ def get_connection(part):
     # Validate the request JSON for required fields.
     if isinstance(js.get("uid_regex"), str) and isinstance(js.get("data_type"), str):
         log.debug(
-            f"Searching for connections matching uid_regex<{js['uid_regex']}> and data_type {js['data_type']}"
+            f"Searching for connections matching uid_regex<{js['uid_regex']}> and "f
+            "data_type {js['data_type']}"
         )
 
         # Initialize the result list to store matching connections.
