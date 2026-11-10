@@ -62,7 +62,7 @@ The resolved physical hostname of the connection endpoint, resolved from the `ur
  - `tcp://np04-srv-029:30006` - resolved URI
 
 
-## `data_type: int`
+## Endpoint type
 Identifies the type of data transmitted through this connection. This is crucial for routing, serialization/deserialization, and monitoring. This is a mandatory field.
 
 The follwowing table lists the currently defined types
@@ -77,7 +77,7 @@ The follwowing table lists the currently defined types
 | Data Selection and Recording | Fragment<br/>TriggerRecord<br/>TRBCompletion<br/>TriggerInhibit |
 | Control | RunControlMessage |
 
-## `connection_type: int`
+## Connection type (ZMQ mapped)
 
 Specifies the ZeroMQ messaging pattern used for this connection. It is defined as either 0 for `kSendRecv` (synchronous) or `kPubSub` (publisher-subscriber model).
 
@@ -148,15 +148,15 @@ The connectivity service displays all active connections in an HTML table at the
 
 | Column | Source | Description |
 |--------|--------|-------------|
-| **Name** | Connection key (uid) | Unique identifier for this connection |
-| **uri** | Connection.uri | Raw network endpoint (e.g., `tcp://gp04-srv-029:30006`) |
-| **uri (resolved)** | Connection.hostname | Resolved physical hostname via DNS/Kubernetes |
-| **data_type** | Connection.data_type | Type of data transmitted (see below) |
-| **capacity** | Connection.capacity | Queue buffer size limit |
-| **connection_type** | Connection.connection_type | Messaging pattern (0=kSendRecv, 1=kPubSub) |
-| **time** | Connection.time | Registration timestamp; text turns red when expired (>TTL) |
+| **Application** | Connection key (uid) | Unique identifier for this connection |
+| **URI** | Connection.uri | Raw network endpoint (e.g., `tcp://gp04-srv-029:30006`) |
+| **Resolved URI** | Connection.hostname | Resolved physical hostname via DNS/Kubernetes |
+| **Endpoint type** | Connection.data_type | Type of data transmitted (see below) |
+| **Capacity** | Connection.capacity | Queue buffer size limit |
+| **Connection type (ZMQ mapped)** | Connection.connection_type | Messaging pattern (0=kSendRecv, 1=kPubSub) |
+| **Last updated time** | Connection.time | Registration timestamp; text turns red when expired (>TTL) |
 
-**Color Coding:** Entries displayed in red text indicate they have exceeded the Entry TTL (default 10 seconds) and will be automatically removed from the server.
+**Color Coding:** Entries displayed in red text indicate they have exceeded the Entry TTL (default 10 seconds).
 
 ## Summary Table: Connection Fields at a Glance
 | Field | Type | Values | Examples | Role |

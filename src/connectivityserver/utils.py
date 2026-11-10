@@ -156,19 +156,21 @@ def resolve_uri_hostname(uri: str) -> str:
 
 def resolve_pod_hostname(pod_ip: str) -> str:
     """
-    Resolve a pod IP to its node's Hostname using explicit, read-only kubeconfig.
+    Resolve a pod IP to its node's Hostname using explicit kubeconfig or in-cluster config.
+
+    Attempts pod discovery via:
+    1. Explicit KUBECONFIG environment variable (kubeconfig file path)
+    2. In-cluster service account credentials (automatic when deployed in K8s)
+    3. Returns empty string if neither is available
 
     Args:
         pod_ip (str): The IP address of the pod to resolve.
 
     Returns:
-        str: The physical hostname, or an empty string when KUBECONFIG is unset,
+        str: The physical hostname, or an empty string when pod discovery is unavailable,
             no pod matches or discovery fails. Skips and failures are debug-logged.
     """
     kubeconfig = os.environ.get("KUBECONFIG")
-    if not kubeconfig:
-        log.debug("Skipping cluster lookup: KUBECONFIG is not set")
-        return ""
 
     try:
         # Parse the pod IP address and prepare the Kubernetes client configuration.
@@ -176,11 +178,23 @@ def resolve_pod_hostname(pod_ip: str) -> str:
 
         # Load the Kubernetes client configuration and set up the API client.
         configuration = client.Configuration()
-        config.load_kube_config(
-            config_file=kubeconfig,
-            client_configuration=configuration,
-            persist_config=False,
-        )
+        
+        if kubeconfig:
+            # Explicit kubeconfig file provided
+            config.load_kube_config(
+                config_file=kubeconfig,
+                client_configuration=configuration,
+                persist_config=False,
+            )
+            log.debug("Loaded kubeconfig from KUBECONFIG env var for pod discovery")
+        else:
+            # Try in-cluster configuration (automatic when running in Kubernetes)
+            try:
+                config.load_incluster_config(client_configuration=configuration)
+                log.debug("Loaded in-cluster configuration for pod discovery")
+            except ConfigException:
+                log.debug("No KUBECONFIG and not running in-cluster: skipping pod discovery")
+                return ""
         api_host = urlparse(configuration.host).hostname
 
         # Update the no_proxy configuration to include the API host.
@@ -277,7 +291,7 @@ def resolve_hostname(ip_address: str) -> str:
                             return candidate.rstrip(".")
                 except OSError:
                     continue
-            log.warning("Could not obtain an FQDN for host %s", ip_address)
+            log.info("Could not obtain an FQDN for host %s", ip_address)
             return ""
 
         # If an IP address was successfully parsed and reverse lookup succeeded, check
@@ -289,7 +303,7 @@ def resolve_hostname(ip_address: str) -> str:
         # If no FQDN was found in the hostname and aliases, return the hostname as-is.
         return hostname.rstrip(".")
     except OSError as e:
-        log.warning("Could not resolve host %s: %s", ip_address, e)
+        log.info("Could not resolve host %s: %s", ip_address, e)
         return ""
 
 
@@ -321,6 +335,7 @@ def map_uri_to_hostname(uri: str) -> str:
         while len(hostname_cache) > 4096:
             hostname_cache.popitem(last=False)
     return hostname
+
 
 def map_uri_to_resolved_uri(uri: str) -> str:
     """
@@ -375,6 +390,24 @@ def format_cell(value: str | int | datetime, expired: bool) -> str:
     """
     text = escape(str(value))
     return f'<span style="color: red;">{text}</span>' if expired else text
+
+
+def format_connection_type(connection_type: int) -> str:
+    """
+    Format the connection type as a human-readable string.
+
+    Args:
+        connection_type (int): The connection type identifier.
+
+    Returns:
+        str: The formatted connection type string.
+    """
+    # Example mapping, replace with actual connection type mapping if needed.
+    connection_type_map = {
+        0: "kSendRecv",
+        1: "kPubSub",
+    }
+    return connection_type_map.get(connection_type, "Unknown")
 
 
 def stats_to_html(

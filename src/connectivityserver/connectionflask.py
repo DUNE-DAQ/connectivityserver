@@ -19,6 +19,7 @@ from flask import Flask, abort, jsonify, make_response, request
 from connectivityserver.utils import (
     Connection,
     format_cell,
+    format_connection_type,
     log,
     map_uri_to_hostname,
     map_uri_to_port,
@@ -138,8 +139,8 @@ def dump() -> str:
 
     # Construct the start of the HTML dump stream.
     dstream = StringIO()
-    dstream.write("<h1>Dump of configuration dictionary</h1>")
-    dstream.write("<h2>Active partitions</h2><p>")
+    dstream.write("<h1>Connectivity Server</h1>")
+    dstream.write("<h2>Active session summary</h2><p>")
 
     # Snapshot before rendering so DNS does not hold the partition lock.
     with partlock:
@@ -150,8 +151,8 @@ def dump() -> str:
         pad = ' style="padding-left: 1em;padding-right: 1em"'
         dstream.write(
             f'<table style="border: 1px solid black">'
-            f'<tr style="background: #e0e0e0"><th{pad}>Partition</th>'
-            f"<th{pad}>Entries</th></tr>"
+            f'<tr style="background: #e0e0e0"><th{pad}>Session</th>'
+            f"<th{pad}>Connections</th></tr>"
         )
 
         # Generate the HTML rows for each partition with its entry count.
@@ -163,29 +164,30 @@ def dump() -> str:
 
         # Set the table for active partitions.
         dstream.write("</table>")
-        dstream.write("<h2>Partitions</h2>")
+        dstream.write("<h2>Sessions</h2>")
         for p in partitions_copy:
             store = partitions_copy[p]
             dstream.write(f"<h3>{escape(p)}</h3>")
             dstream.write(
                 f'<table style="border: 1px solid black">'
                 f'<tr style="background: #e0e0e0">'
-                f'<th{pad} rowspan="2">Name</th>'
+                f'<th{pad} rowspan="2">Application</th>'
                 f'<th{pad} colspan="6">Connection</th>'
                 f"</tr>"
                 f'<tr style="background: #e0e0e0">'
-                f"<th{pad}>uri</th>"
-                f"<th{pad}>uri (resolved)</th>"
-                f"<th{pad}>data_type</th>"
-                f"<th{pad}>capacity</th>"
-                f"<th{pad}>connection_type</th>"
-                f"<th{pad}>time</th>"
+                f"<th{pad}>URI</th>"
+                f"<th{pad}>Resolved URI</th>"
+                f"<th{pad}>Endpoint type</th>"
+                f"<th{pad}>Capacity</th>"
+                f"<th{pad}>Connection type (ZMQ mapped)</th>"
+                f"<th{pad}>Last updated time</th>"
                 f"</tr>"
             )
             # Iterate over each entry in the partition and generate its HTML row.
             for k, v in store.items():
                 expired = now - v.time >= entry_ttl
                 resolved_uri = map_uri_to_resolved_uri(v.uri)
+                formatted_connection_type = format_connection_type(v.connection_type)
 
                 dstream.write(
                     f"<tr><td{pad}>{format_cell(k, expired)}</td>"
@@ -193,7 +195,7 @@ def dump() -> str:
                     f"<td{pad}>{format_cell(resolved_uri, expired)}</td>"
                     f"<td{pad}>{format_cell(v.data_type, expired)}</td>"
                     f"<td{pad}>{format_cell(v.capacity, expired)}</td>"
-                    f"<td{pad}>{format_cell(v.connection_type, expired)}</td>"
+                    f"<td{pad}>{format_cell(formatted_connection_type, expired)}</td>"
                     f"<td{pad}>{format_cell(v.time, expired)}</td></tr>"
                 )
 
@@ -375,8 +377,8 @@ def publish() -> str:
             invalid_request("Each connection requires string uid, uri and data_type")
         if type(connection.get("connection_type")) is not int:
             invalid_request("connection_type must be an integer")
-        if "capacity" in connection and type(connection["capacity"]) is not int:
-            invalid_request("capacity must be an integer")
+
+        # Check the hostname format if provided
         if "hostname" in connection:
             hostname = connection["hostname"]
             if (
@@ -396,9 +398,8 @@ def publish() -> str:
                 invalid_request("hostname must be a non-empty DNS hostname, not a URI")
 
     # Log the incoming request for debugging
-    log.debug(f"{js=}")
     part = js["partition"]
-
+    log.debug(f"{js=}")
     log.debug(
         f"{len(js['connections'])} connections in partition {part} from "
         f"{request.remote_addr} uri={js['connections'][0]['uri']}..."
@@ -407,6 +408,7 @@ def publish() -> str:
     # Resolve connection details outside the lock because DNS resolution can be slow.
     connection_details = []
     for connection in js["connections"]:
+        log.debug(f"Handling connection {connection=}")
         uri = connection["uri"]
         connection_details.append(
             (connection, map_uri_to_port(uri), map_uri_to_hostname(uri))
@@ -430,6 +432,7 @@ def publish() -> str:
         # Keep track of the applications already registered in this partition.
         registered_partition_applications = set(store)
 
+        # Process each connection and update the store accordingly.
         for connection, port, hostname in connection_details:
             uid = connection["uid"]
             if uid in registered_partition_applications:
@@ -438,18 +441,28 @@ def publish() -> str:
                 )
             else:
                 log.info(
-                    f"Registering app {uid} with uri {connection['uri']} "
+                    f"Registering endpoint {uid} with uri {connection['uri']} "
                     f"({hostname}:{port})"
                 )
 
-                store[uid] = Connection(
-                    uri=connection["uri"],
-                    connection_type=connection["connection_type"],
-                    data_type=connection["data_type"],
-                    capacity=connection.get("capacity", 0),
-                    time=timestamp,
-                    hostname=connection.get("hostname", ""),
+            # The expected capacity field is not getting populated, comparing it against
+            # the expected values before displaying
+            _capacity = connection.get("capacity", 0)
+            if _capacity <= 0 or _capacity % 10:
+                log.debug(
+                    f"Malformed capacity {_capacity} for connection {connection['uri']}"
+                    ", setting to 0."
                 )
+                _capacity = 0
+
+            store[uid] = Connection(
+                uri=connection["uri"],
+                connection_type=connection["connection_type"],
+                data_type=connection["data_type"],
+                capacity=_capacity,
+                time=timestamp,
+                hostname=connection.get("hostname", ""),
+            )
 
         # Log the completion of processing all connections for this partition.
         elapsed = timedelta(seconds=time.monotonic() - time_start)
