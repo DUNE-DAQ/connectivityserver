@@ -21,7 +21,7 @@ from kubernetes import client, config
 from kubernetes.config.config_exception import ConfigException
 from urllib3.exceptions import HTTPError
 
-`Connection` = namedtuple(
+Connection = namedtuple(
     "Connection",
     ["uri", "data_type", "capacity", "connection_type", "time", "hostname"],
 )
