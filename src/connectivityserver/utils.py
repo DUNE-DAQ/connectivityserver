@@ -21,7 +21,7 @@ from kubernetes import client, config
 from kubernetes.config.config_exception import ConfigException
 from urllib3.exceptions import HTTPError
 
-Connection = namedtuple(
+`Connection` = namedtuple(
     "Connection",
     ["uri", "data_type", "capacity", "connection_type", "time", "hostname"],
 )
@@ -97,39 +97,14 @@ def map_uri_to_port(uri: str):
         return ""
 
 
-def map_uri_to_hostname(uri: str) -> str:
-    """
-    Map a URI to a hostname, preferring a fully qualified name.
-
-    Args:
-        uri (str): The URI string to be mapped.
-
-    Returns:
-        str: The resolved hostname or an empty string if resolution fails.
-    """
-    # Query the hostname cache first to see if the URI has been resolved recently.
-    with hostname_cache_lock:
-        entry = hostname_cache.get(uri)
-        if entry is not None:
-            hostname, expires = entry
-            if time.monotonic() < expires:
-                hostname_cache.move_to_end(uri)
-                return hostname
-            del hostname_cache[uri]
-
-    # Add the resolved hostname to the cache with an expiration time of 1 hour.
-    hostname = resolve_uri_hostname(uri)
-    with hostname_cache_lock:
-        hostname_cache[uri] = (hostname, time.monotonic() + 3600)
-        hostname_cache.move_to_end(uri)
-        while len(hostname_cache) > 4096:
-            hostname_cache.popitem(last=False)
-    return hostname
-
 
 def resolve_uri_hostname(uri: str) -> str:
     """
-    Resolve pod endpoints through the control plane and other hosts through DNS.
+    Resolve through system DNS first, then optionally resolve a pod's physical host.
+
+    IP and cluster-DNS endpoints use Kubernetes only when KUBECONFIG is set.
+    A successful cluster lookup takes precedence over DNS. Cluster-DNS names
+    are never returned as physical hostnames.
 
     Args:
         uri (str): The URI string to be resolved.
@@ -146,15 +121,22 @@ def resolve_uri_hostname(uri: str) -> str:
         log.debug(f"Could not parse {uri}")
         return ""
 
+    hostname = resolve_hostname(ip_address)
+    if re.search(r"\.(?:svc|pod)\.", hostname, re.IGNORECASE):
+        hostname = ""
+
     try:
         address = str(parse_ip_address(ip_address))
     except ValueError:
         # Non-IP hosts use DNS; cluster names also require control-plane lookup.
         if not re.search(r"\.(?:svc|pod)\.", ip_address, re.IGNORECASE):
-            return resolve_hostname(ip_address)
+            return hostname
+        if not os.environ.get("KUBECONFIG"):
+            log.debug("Skipping cluster lookup: KUBECONFIG is not set")
+            return hostname
         try:
             addresses = {
-                entry[4][0] # Get the canonical IP address from the socket info tuple
+                entry[4][0]
                 for entry in socket.getaddrinfo(
                     ip_address,
                     None,
@@ -162,36 +144,32 @@ def resolve_uri_hostname(uri: str) -> str:
                 )
             }
         except OSError as error:
-            log.warning("Could not resolve pod endpoint %s: %s", ip_address, error)
-            return ""
+            log.debug("Cluster endpoint DNS failed for %s: %s", ip_address, error)
+            return hostname
         if len(addresses) != 1:
-            log.warning("Pod endpoint %s is not unique", ip_address)
-            return ""
-        return resolve_pod_hostname(addresses.pop())[1]
+            log.debug("Cluster endpoint %s does not identify one IP", ip_address)
+            return hostname
+        address = addresses.pop()
 
-    is_pod, hostname = resolve_pod_hostname(address)
-    if is_pod:
-        return hostname
-    hostname = resolve_hostname(address)
-    if re.search(r"\.(?:svc|pod)\.", hostname, re.IGNORECASE):
-        log.warning("No physical hostname established for cluster endpoint %s", address)
-        return ""
-    return hostname
+    return resolve_pod_hostname(address) or hostname
 
 
-def resolve_pod_hostname(pod_ip: str) -> tuple[bool | None, str]:
+def resolve_pod_hostname(pod_ip: str) -> str:
     """
-    Return (is_pod, hostname) from pod scheduling and the node's Hostname address.
+    Resolve a pod IP to its node's Hostname using explicit, read-only kubeconfig.
 
     Args:
         pod_ip (str): The IP address of the pod to resolve.
 
     Returns:
-        tuple[bool | None, str]: 
-            - (True, hostname) for a resolved pod,
-            - (False, "") if no pod matches, 
-            - (None, "") if discovery fails, including missing or ambiguous information.
+        str: The physical hostname, or an empty string when KUBECONFIG is unset,
+            no pod matches or discovery fails. Skips and failures are debug-logged.
     """
+    kubeconfig = os.environ.get("KUBECONFIG")
+    if not kubeconfig:
+        log.debug("Skipping cluster lookup: KUBECONFIG is not set")
+        return ""
+
     try:
         # Parse the pod IP address and prepare the Kubernetes client configuration.
         address = str(parse_ip_address(pod_ip))
@@ -199,7 +177,9 @@ def resolve_pod_hostname(pod_ip: str) -> tuple[bool | None, str]:
         # Load the Kubernetes client configuration and set up the API client.
         configuration = client.Configuration()
         config.load_kube_config(
-            client_configuration=configuration, persist_config=False
+            config_file=kubeconfig,
+            client_configuration=configuration,
+            persist_config=False,
         )
         api_host = urlparse(configuration.host).hostname
 
@@ -216,7 +196,8 @@ def resolve_pod_hostname(pod_ip: str) -> tuple[bool | None, str]:
                 _request_timeout=(3, 3),
             ).items
             if not pods:
-                return False, ""
+                log.debug("No pod found for %s", pod_ip)
+                return ""
             nodes = {pod.spec.node_name for pod in pods}
             if None in nodes or "" in nodes or len(nodes) != 1:
                 raise ValueError("Pod IP does not uniquely identify the scheduled node")
@@ -237,19 +218,17 @@ def resolve_pod_hostname(pod_ip: str) -> tuple[bool | None, str]:
             raise ValueError("invalid node hostname")
 
         # Prefer a DNS-qualified name, retaining the reported hostname on failure.
-        return True, resolve_hostname(hostname) or hostname
+        return resolve_hostname(hostname) or hostname
     except client.ApiException as error:
-        log.warning(
-            "Control-plane lookup for %s failed (HTTP %s); check kubeconfig context, "
-            "network access and permissions to list pods and get nodes",
+        log.debug(
+            "Cluster lookup for %s failed (HTTP %s)",
             pod_ip,
             error.status,
         )
     except (OSError, HTTPError, ConfigException, ValueError) as error:
-        log.warning("Could not identify physical pod host for %s: %s", pod_ip, error)
+        log.debug("Cluster lookup for %s failed: %s", pod_ip, error)
 
-    # Expected discovery failures are logged above.
-    return None, ""
+    return ""
 
 
 def resolve_hostname(ip_address: str) -> str:
@@ -314,6 +293,35 @@ def resolve_hostname(ip_address: str) -> str:
         return ""
 
 
+def map_uri_to_hostname(uri: str) -> str:
+    """
+    Map a URI to a hostname, preferring a fully qualified name.
+
+    Args:
+        uri (str): The URI string to be mapped.
+
+    Returns:
+        str: The resolved hostname or an empty string if resolution fails.
+    """
+    # Query the hostname cache first to see if the URI has been resolved recently.
+    with hostname_cache_lock:
+        entry = hostname_cache.get(uri)
+        if entry is not None:
+            hostname, expires = entry
+            if time.monotonic() < expires:
+                hostname_cache.move_to_end(uri)
+                return hostname
+            del hostname_cache[uri]
+
+    # Add the resolved hostname to the cache with an expiration time of 1 hour.
+    hostname = resolve_uri_hostname(uri)
+    with hostname_cache_lock:
+        hostname_cache[uri] = (hostname, time.monotonic() + 3600)
+        hostname_cache.move_to_end(uri)
+        while len(hostname_cache) > 4096:
+            hostname_cache.popitem(last=False)
+    return hostname
+
 def map_uri_to_resolved_uri(uri: str) -> str:
     """
     Resolve the hostname and replace it in the URI.
@@ -350,6 +358,7 @@ def map_uri_to_resolved_uri(uri: str) -> str:
     # Replace the netloc in the parsed URI with the constructed netloc.
     return parsed._replace(netloc=netloc).geturl()
 
+### Flask app helper functions
 
 def format_cell(value: str | int | datetime, expired: bool) -> str:
     """

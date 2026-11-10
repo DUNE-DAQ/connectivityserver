@@ -26,7 +26,7 @@ from connectivityserver.utils import (
     stats_to_html,
 )
 
-partitions = {}
+partitions: dict[str, dict[str, Connection]] = {}
 partlock = RLock()
 
 if "ENTRY_TTL" in os.environ:
@@ -143,10 +143,10 @@ def dump() -> str:
 
     # Snapshot before rendering so DNS does not hold the partition lock.
     with partlock:
-        partition_copy = {p: store.copy() for p, store in partitions.items()}
+        partitions_copy = {p: store.copy() for p, store in partitions.items()}
 
     # If there are partitions, generate the HTML table for them.
-    if partition_copy:
+    if partitions_copy:
         pad = ' style="padding-left: 1em;padding-right: 1em"'
         dstream.write(
             f'<table style="border: 1px solid black">'
@@ -155,8 +155,8 @@ def dump() -> str:
         )
 
         # Generate the HTML rows for each partition with its entry count.
-        for p in partition_copy:
-            length = len(partition_copy[p])
+        for p in partitions_copy:
+            length = len(partitions_copy[p])
             dstream.write(
                 f"<tr><td{pad}>{escape(p)}</td><td{pad}>{length}</td></tr>"
             )
@@ -164,8 +164,8 @@ def dump() -> str:
         # Set the table for active partitions.
         dstream.write("</table>")
         dstream.write("<h2>Partitions</h2>")
-        for p in partition_copy:
-            store = partition_copy[p]
+        for p in partitions_copy:
+            store = partitions_copy[p]
             dstream.write(f"<h3>{escape(p)}</h3>")
             dstream.write(
                 f'<table style="border: 1px solid black">'
@@ -185,12 +185,12 @@ def dump() -> str:
             # Iterate over each entry in the partition and generate its HTML row.
             for k, v in store.items():
                 expired = now - v.time >= entry_ttl
-                resolved_hostname = map_uri_to_resolved_uri(v.uri)
+                resolved_uri = map_uri_to_resolved_uri(v.uri)
 
                 dstream.write(
                     f"<tr><td{pad}>{format_cell(k, expired)}</td>"
                     f"<td{pad}>{format_cell(v.uri, expired)}</td>"
-                    f"<td{pad}>{format_cell(resolved_hostname, expired)}</td>"
+                    f"<td{pad}>{format_cell(resolved_uri, expired)}</td>"
                     f"<td{pad}>{format_cell(v.data_type, expired)}</td>"
                     f"<td{pad}>{format_cell(v.capacity, expired)}</td>"
                     f"<td{pad}>{format_cell(v.connection_type, expired)}</td>"
