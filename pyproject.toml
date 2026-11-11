@@ -12,6 +12,8 @@ urls = { "homepage" = "https://github.com/DUNE-DAQ/connectivityserver" }
 dependencies = [
        "Flask",
        "gunicorn[gevent]",
+       "kubernetes",
+       "urllib3",
 ]
 
 [tool.setuptools]
